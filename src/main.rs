@@ -14,6 +14,7 @@ mod detect;
 mod uninstall;
 mod openasar;
 mod openasar_detect;
+mod updater;
 
 fn main() {
     logger::init();

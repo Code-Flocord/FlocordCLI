@@ -97,7 +97,9 @@ pub fn install(client: &DiscordClient) {
     println!();
     println!("Installation de Flocord...");
 
-    match fs::write(app_asar, DESKTOP_ASAR) {
+    let asar_data = crate::updater::check_and_update(DESKTOP_ASAR);
+
+    match fs::write(app_asar, &asar_data) {
         Ok(_) => {
             println!("✔ Flocord installé.");
         }
@@ -107,7 +109,7 @@ pub fn install(client: &DiscordClient) {
 
             let temp = install.resources.join("flocord_temp.asar");
 
-            if fs::write(&temp, DESKTOP_ASAR).is_err() {
+            if fs::write(&temp, &asar_data).is_err() {
                 println!("❌ Impossible d'écrire le fichier Flocord.");
                 return;
             }
