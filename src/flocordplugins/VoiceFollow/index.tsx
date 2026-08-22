@@ -31,19 +31,21 @@ function handleVoiceStateUpdates({ voiceStates }: VoiceStateUpdateEvent) {
 
     for (const state of voiceStates) {
         if (state.userId !== followedUserId) continue;
-        if (state.guildId !== followedGuildId) continue;
 
-        // L'utilisateur a quitté la voc sans se déplacer → on ne suit pas
+        // Si guildId null → suivi universel (MP inclus), sinon filtre par serveur
+        if (followedGuildId !== null && state.guildId !== followedGuildId) continue;
+
         if (!state.channelId) continue;
 
         const me = getCurrentUser();
         const myState = VoiceStateStore.getVoiceStateForUser(me.id);
 
-        // Déjà dans le bon salon
         if (myState?.channelId === state.channelId) continue;
 
-        if (!canJoinChannel(state.channelId)) {
-            // Salon inaccessible : on se déco si l'option est activée et qu'on est en voc
+        const channel = ChannelStore.getChannel(state.channelId);
+
+        // Vérification des permissions uniquement pour les salons de serveur
+        if (channel?.guild_id && !canJoinChannel(state.channelId)) {
             if (settings.store.disconnectOnInaccessible && myState?.channelId) {
                 selectVoiceChannel(null);
             }
@@ -56,15 +58,10 @@ function handleVoiceStateUpdates({ voiceStates }: VoiceStateUpdateEvent) {
 }
 
 const userContextPatch: NavContextMenuPatchCallback = (children, { user, guildId }) => {
-    if (!user || !guildId) return;
+    if (!user) return;
 
-    const targetVoiceState = VoiceStateStore.getVoiceStateForUser(user.id);
-    if (!targetVoiceState?.channelId) return;
-
-    const channel = ChannelStore.getChannel(targetVoiceState.channelId);
-    if (!channel || channel.guild_id !== guildId) return;
-
-    const isFollowed = followedUserId === user.id && followedGuildId === guildId;
+    const resolvedGuildId = guildId ?? null;
+    const isFollowed = followedUserId === user.id && followedGuildId === resolvedGuildId;
 
     children.push(
         <Menu.MenuItem
@@ -76,7 +73,7 @@ const userContextPatch: NavContextMenuPatchCallback = (children, { user, guildId
                     followedGuildId = null;
                 } else {
                     followedUserId = user.id;
-                    followedGuildId = guildId;
+                    followedGuildId = resolvedGuildId;
                 }
             }}
         />
