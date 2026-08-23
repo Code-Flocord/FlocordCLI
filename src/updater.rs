@@ -6,7 +6,7 @@ use serde::Deserialize;
 const VERSION_URL: &str =
     "https://raw.githubusercontent.com/Code-Flocord/FlocordCLI/master/version.json";
 
-pub const EMBEDDED_VERSION: &str = "1.0.3";
+pub const EMBEDDED_VERSION: &str = "1.0.4";
 
 #[derive(Deserialize)]
 struct VersionManifest {
