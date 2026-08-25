@@ -62,33 +62,37 @@ pub fn install(client: &DiscordClient) {
     let app_asar = &install.app_asar;
     let original_asar = install.resources.join("_app.asar");
 
-    // Equicord/Vencord patcher.js attend l'app Discord originale dans _app.asar
-    match fs::copy(app_asar, &original_asar) {
-        Ok(_) => {
-            println!("✔ _app.asar créé.");
-        }
+    if original_asar.exists() {
+        println!("✔ _app.asar déjà présent.");
+    } else {
+        // Equicord/Vencord patcher.js attend l'app Discord originale dans _app.asar
+        match fs::copy(app_asar, &original_asar) {
+            Ok(_) => {
+                println!("✔ _app.asar créé.");
+            }
 
-        Err(_) => {
-            println!("⚠ Copie directe refusée, tentative PowerShell...");
+            Err(_) => {
+                println!("⚠ Copie directe refusée, tentative PowerShell...");
 
-            let command = format!(
-                "Copy-Item -Path '{}' -Destination '{}' -Force",
-                app_asar.to_string_lossy(),
-                original_asar.to_string_lossy()
-            );
+                let command = format!(
+                    "Copy-Item -Path '{}' -Destination '{}' -Force",
+                    app_asar.to_string_lossy(),
+                    original_asar.to_string_lossy()
+                );
 
-            let result = Command::new("powershell")
-                .args(["-Command", &command])
-                .output();
+                let result = Command::new("powershell")
+                    .args(["-Command", &command])
+                    .output();
 
-            match result {
-                Ok(output) if output.status.success() => {
-                    println!("✔ _app.asar créé.");
-                }
+                match result {
+                    Ok(output) if output.status.success() => {
+                        println!("✔ _app.asar créé.");
+                    }
 
-                _ => {
-                    println!("❌ Impossible de créer _app.asar.");
-                    return;
+                    _ => {
+                        println!("❌ Impossible de créer _app.asar.");
+                        return;
+                    }
                 }
             }
         }
