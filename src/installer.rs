@@ -64,31 +64,51 @@ pub fn install(client: &DiscordClient) {
 
     if original_asar.exists() {
         println!("✔ _app.asar déjà présent.");
+    } else if app_asar.is_dir() {
+        // Nouveau format Discord : app.asar est un dossier → renommer en _app.asar
+        match fs::rename(app_asar, &original_asar) {
+            Ok(_) => {
+                println!("✔ _app.asar créé (dossier renommé).");
+            }
+            Err(_) => {
+                let command = format!(
+                    "Rename-Item -Path '{}' -NewName '_app.asar' -Force",
+                    app_asar.to_string_lossy()
+                );
+                let result = Command::new("powershell")
+                    .args(["-Command", &command])
+                    .output();
+                match result {
+                    Ok(output) if output.status.success() => {
+                        println!("✔ _app.asar créé (dossier renommé via PowerShell).");
+                    }
+                    _ => {
+                        println!("❌ Impossible de renommer app.asar en _app.asar.");
+                        return;
+                    }
+                }
+            }
+        }
     } else {
-        // Equicord/Vencord patcher.js attend l'app Discord originale dans _app.asar
+        // Format classique : app.asar est un fichier → copier en _app.asar
         match fs::copy(app_asar, &original_asar) {
             Ok(_) => {
                 println!("✔ _app.asar créé.");
             }
-
             Err(_) => {
                 println!("⚠ Copie directe refusée, tentative PowerShell...");
-
                 let command = format!(
                     "Copy-Item -Path '{}' -Destination '{}' -Force",
                     app_asar.to_string_lossy(),
                     original_asar.to_string_lossy()
                 );
-
                 let result = Command::new("powershell")
                     .args(["-Command", &command])
                     .output();
-
                 match result {
                     Ok(output) if output.status.success() => {
                         println!("✔ _app.asar créé.");
                     }
-
                     _ => {
                         println!("❌ Impossible de créer _app.asar.");
                         return;
