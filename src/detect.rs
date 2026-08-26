@@ -43,8 +43,11 @@ pub fn detect(client: &DiscordClient) -> Option<InstallInfo> {
         let resources = path.join("resources");
 
         let app_asar = resources.join("app.asar");
+        let original_asar = resources.join("_app.asar");
 
-        if !app_asar.exists() {
+        // Accept folders where Flocord is installed (app.asar exists)
+        // OR where a fresh install is possible (_app.asar exists as the original Discord)
+        if !app_asar.exists() && !original_asar.exists() {
             continue;
         }
 
@@ -70,7 +73,16 @@ pub fn detect(client: &DiscordClient) -> Option<InstallInfo> {
 
     }
 
-    installs.sort_by(|a, b| a.version.cmp(&b.version));
+    installs.sort_by(|a, b| {
+        let parse = |v: &str| -> (u64, u64, u64) {
+            let mut parts = v.split('.');
+            let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0u64);
+            let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0u64);
+            let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0u64);
+            (major, minor, patch)
+        };
+        parse(&a.version).cmp(&parse(&b.version))
+    });
 
     let mut install = installs.pop().unwrap();
 
