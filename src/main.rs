@@ -91,6 +91,31 @@ fn clear_screen() {
     print!("\x1B[2J\x1B[1;1H");
 }
 
+fn ask_relaunch(client: &client::DiscordClient) {
+    println!();
+    println!("Voulez-vous relancer {} maintenant ?", client.name);
+    println!("[1] Oui");
+    println!("[2] Non");
+
+    print!("> ");
+    io::stdout().flush().unwrap();
+
+    let mut choice = String::new();
+    io::stdin().read_line(&mut choice).unwrap();
+
+    if choice.trim() != "1" {
+        return;
+    }
+
+    if process::launch_discord(&client.path, &client.executable) {
+        println!("✔ {} relancé.", client.name);
+        logger::write(&format!("{} relancé", client.name));
+    } else {
+        println!("❌ Impossible de relancer {}.", client.name);
+        logger::write(&format!("Échec relance {}", client.name));
+    }
+}
+
 fn install() {
     println!();
     println!("================================");
@@ -194,6 +219,8 @@ fn install() {
     installer::install(&selected);
 
     logger::write("Préparation installation terminée");
+
+    ask_relaunch(&selected);
 }
 
 fn repair() {
@@ -294,6 +321,8 @@ fn repair() {
     repair::repair(&selected);
 
     logger::write("Réparation terminée");
+
+    ask_relaunch(&selected);
 }
 
 fn uninstall() {
@@ -394,6 +423,8 @@ fn uninstall() {
     uninstall::uninstall(&selected);
 
     logger::write("Désinstallation terminée");
+
+    ask_relaunch(&selected);
 }
 
 fn openasar_install() {
@@ -427,6 +458,7 @@ fn openasar_install() {
 
     openasar::install(&selected);
 
+    ask_relaunch(&selected);
 }
 
 
@@ -462,6 +494,7 @@ fn openasar_uninstall() {
 
     openasar::uninstall(&selected);
 
+    ask_relaunch(&selected);
 }
 
 fn detect_discord() {

@@ -37,6 +37,20 @@ pub fn is_process_running(discord_path: &PathBuf) -> bool {
     }
 }
 
+pub fn launch_discord(discord_path: &PathBuf, executable: &PathBuf) -> bool {
+    let updater = discord_path.join("Update.exe");
+
+    let result = if updater.exists() {
+        Command::new(&updater)
+            .args(["--processStart", &get_process_name(discord_path)])
+            .spawn()
+    } else {
+        Command::new(executable).spawn()
+    };
+
+    result.is_ok()
+}
+
 pub fn close_discord(discord_path: &PathBuf) -> bool {
     let process_name = get_process_name(discord_path);
 
