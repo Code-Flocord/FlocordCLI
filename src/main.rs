@@ -83,7 +83,7 @@ fn banner() {
     println!("\x1b[0m");
 
     println!("============================================");
-    println!("          Flocord Installer v0.1.0");
+    println!("          Flocord Installer v{}", updater::embedded_version());
     println!("============================================");
 }
 

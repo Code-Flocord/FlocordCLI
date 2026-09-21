@@ -6,12 +6,18 @@ use serde::Deserialize;
 const VERSION_URL: &str =
     "https://raw.githubusercontent.com/Code-Flocord/FlocordCLI/master/version.json";
 
-pub const EMBEDDED_VERSION: &str = "1.0.4";
+static EMBEDDED_MANIFEST: &str = include_str!("../version.json");
 
 #[derive(Deserialize)]
 struct VersionManifest {
     version: String,
     url: String,
+}
+
+pub fn embedded_version() -> String {
+    serde_json::from_str::<VersionManifest>(EMBEDDED_MANIFEST)
+        .map(|m| m.version)
+        .unwrap_or_else(|_| "0.0.0".to_string())
 }
 
 fn cache_path() -> PathBuf {
@@ -32,6 +38,8 @@ fn version_gt(a: &str, b: &str) -> bool {
 }
 
 pub fn check_and_update(embedded: &[u8]) -> Vec<u8> {
+    let embedded_version = embedded_version();
+
     print!("  Vérification des mises à jour Flocord...");
 
     let client = match reqwest::blocking::Client::builder()
@@ -61,15 +69,15 @@ pub fn check_and_update(embedded: &[u8]) -> Vec<u8> {
         }
     };
 
-    if !version_gt(&manifest.version, EMBEDDED_VERSION) {
-        println!(" à jour (v{}).", EMBEDDED_VERSION);
+    if !version_gt(&manifest.version, &embedded_version) {
+        println!(" à jour (v{}).", embedded_version);
         return embedded.to_vec();
     }
 
     println!();
     println!(
         "  Mise à jour disponible : v{} → v{}",
-        EMBEDDED_VERSION, manifest.version
+        embedded_version, manifest.version
     );
     print!("  Téléchargement...");
 
