@@ -1,0 +1,35 @@
+name: Announce Release
+on:
+    release:
+        types: [published]
+
+jobs:
+    announce:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Post release notes to Discord
+              env:
+                  WEBHOOK_URL: ${{ secrets.RELEASE_WEBHOOK_URL }}
+                  TAG: ${{ github.event.release.tag_name }}
+                  NAME: ${{ github.event.release.name }}
+                  BODY: ${{ github.event.release.body }}
+                  URL: ${{ github.event.release.html_url }}
+              run: |
+                  python3 - <<'EOF'
+                  import json, os, urllib.request
+                  body = os.environ["BODY"].strip()
+                  if len(body) > 3500:
+                      body = body[:3480] + "\n… (suite sur GitHub)"
+                  payload = {
+                      "username": "Flocord Releases",
+                      "embeds": [{
+                          "title": os.environ["NAME"] or os.environ["TAG"],
+                          "url": os.environ["URL"],
+                          "description": body + "\n\n**Télécharger :** " + os.environ["URL"] + "\nLa mise à jour automatique se propose aussi au démarrage de Discord.",
+                          "color": 0x8B5CF6
+                      }]
+                  }
+                  req = urllib.request.Request(os.environ["WEBHOOK_URL"], data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "User-Agent": "FlocordReleaseAnnouncer/1.0"})
+                  with urllib.request.urlopen(req) as res:
+                      print("posted", res.status)
+                  EOF
