@@ -2,181 +2,147 @@ use crate::backup;
 use crate::client::DiscordClient;
 use crate::detect;
 use crate::logger;
+use crate::registry;
+use crate::updater;
 
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 static DESKTOP_ASAR: &[u8] = include_bytes!("../assets/desktop.asar");
 
-pub fn install(client: &DiscordClient) {
-    println!();
-    println!("================================");
-    println!("      Installation Flocord");
-    println!("================================");
-    println!();
+fn remove_any(path: &Path) -> Result<(), String> {
+    let result = if path.is_dir() { fs::remove_dir_all(path) } else if path.exists() { fs::remove_file(path) } else { Ok(()) };
+    if result.is_ok() {
+        return Ok(());
+    }
 
-    println!("Client  : {}", client.name);
-    println!("Canal   : {}", client.channel);
+    let command = format!("Remove-Item -LiteralPath '{}' -Recurse -Force", path.to_string_lossy());
+    let ok = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &command])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
+    if ok { Ok(()) } else { Err(format!("impossible de supprimer {}", path.display())) }
+}
+
+fn write_asar(target: &Path, resources: &Path, data: &[u8]) -> Result<(), String> {
+    if fs::write(target, data).is_ok() {
+        return Ok(());
+    }
+
+    let temp = resources.join("flocord_temp.asar");
+    fs::write(&temp, data).map_err(|e| format!("écriture impossible : {}", e))?;
+
+    let command = format!(
+        "Move-Item -LiteralPath '{}' -Destination '{}' -Force",
+        temp.to_string_lossy(),
+        target.to_string_lossy()
+    );
+    let ok = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &command])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if ok {
+        Ok(())
+    } else {
+        let _ = fs::remove_file(&temp);
+        Err("écriture de app.asar refusée".to_string())
+    }
+}
+
+/// Installe (ou réinstalle avec `force`) Flocord sur le dossier Discord le plus récent.
+/// Gère tous les états : Discord vierge, Flocord déjà présent, dossier relais app/ laissé par une mise à jour.
+pub fn install(client: &DiscordClient, force: bool) -> bool {
     println!();
-    println!("Vérification du client Discord...");
+    println!("Client  : {} ({})", client.name, client.channel);
 
     if !client.executable.exists() {
-        println!("❌ Exécutable Discord introuvable.");
-        println!("{}", client.executable.display());
-        return;
+        println!("❌ Exécutable Discord introuvable : {}", client.executable.display());
+        return false;
     }
 
-    println!("✔ Exécutable trouvé.");
-
-    let install = match detect::detect(client) {
-        Some(value) => value,
-        None => {
-            println!("❌ Aucun Discord compatible trouvé.");
-            return;
-        }
+    let Some(info) = detect::detect(client) else {
+        println!("❌ Aucun dossier Discord exploitable.");
+        return false;
     };
 
-    println!("✔ Version ciblée : {}", install.version);
-    println!("✔ Resources : {}", install.resources.display());
+    println!("Discord : {}", info.version);
 
-    if install.installed {
+    if info.installed && !force {
         println!();
-        println!("✔ Flocord est déjà installé.");
-        return;
+        println!("✔ Flocord v{} est déjà installé.", info.flocord_version.unwrap_or_default());
+        registry::mark(&client.channel);
+        return true;
     }
 
-    println!();
-    println!("Création du backup...");
-
-    if !backup::create_backup(&install.resources, &install.app_asar) {
-        println!("❌ Impossible de créer le backup.");
-        return;
-    }
-
-    println!("✔ Backup prêt.");
+    let resources = &info.resources;
+    let app = &info.app_asar;
+    let original = &info.original_asar;
 
     println!();
     println!("Préparation du Discord original...");
 
-    let app_asar = &install.app_asar;
-    let original_asar = install.resources.join("_app.asar");
-
-    if original_asar.exists() {
-        println!("✔ _app.asar déjà présent.");
-    } else if app_asar.is_dir() {
-        // Nouveau format Discord : app.asar est un dossier → renommer en _app.asar
-        match fs::rename(app_asar, &original_asar) {
-            Ok(_) => {
-                println!("✔ _app.asar créé (dossier renommé).");
-            }
-            Err(_) => {
-                let command = format!(
-                    "Rename-Item -Path '{}' -NewName '_app.asar' -Force",
-                    app_asar.to_string_lossy()
-                );
-                let result = Command::new("powershell")
-                    .args(["-Command", &command])
-                    .output();
-                match result {
-                    Ok(output) if output.status.success() => {
-                        println!("✔ _app.asar créé (dossier renommé via PowerShell).");
-                    }
-                    _ => {
-                        println!("❌ Impossible de renommer app.asar en _app.asar.");
-                        return;
-                    }
-                }
-            }
+    if original.exists() {
+        println!("✔ _app.asar présent.");
+        if !backup::create_backup(resources, original) {
+            return false;
         }
+    } else if app.is_file() {
+        if !backup::create_backup(resources, app) {
+            return false;
+        }
+        if let Err(error) = fs::rename(app, original) {
+            println!("❌ Impossible de renommer app.asar en _app.asar : {}", error);
+            return false;
+        }
+        println!("✔ _app.asar créé.");
     } else {
-        // Format classique : app.asar est un fichier → copier en _app.asar
-        match fs::copy(app_asar, &original_asar) {
-            Ok(_) => {
-                println!("✔ _app.asar créé.");
-            }
-            Err(_) => {
-                println!("⚠ Copie directe refusée, tentative PowerShell...");
-                let command = format!(
-                    "Copy-Item -Path '{}' -Destination '{}' -Force",
-                    app_asar.to_string_lossy(),
-                    original_asar.to_string_lossy()
-                );
-                let result = Command::new("powershell")
-                    .args(["-Command", &command])
-                    .output();
-                match result {
-                    Ok(output) if output.status.success() => {
-                        println!("✔ _app.asar créé.");
-                    }
-                    _ => {
-                        println!("❌ Impossible de créer _app.asar.");
-                        return;
-                    }
-                }
-            }
+        // app.asar est un dossier sans original à côté : on repart du backup
+        let saved = backup::backup_file(resources);
+        if !saved.exists() {
+            println!("❌ Discord original introuvable (ni _app.asar, ni backup). Réinstallez Discord.");
+            return false;
+        }
+        if let Err(error) = fs::copy(&saved, original) {
+            println!("❌ Restauration du backup impossible : {}", error);
+            return false;
+        }
+        println!("✔ _app.asar restauré depuis le backup.");
+    }
+
+    if app.exists() {
+        if let Err(error) = remove_any(app) {
+            println!("❌ {}", error);
+            return false;
         }
     }
 
     println!();
     println!("Installation de Flocord...");
 
-    let asar_data = crate::updater::check_and_update(DESKTOP_ASAR);
+    let payload = updater::check_and_update(DESKTOP_ASAR);
 
-    match fs::write(app_asar, &asar_data) {
-        Ok(_) => {
-            println!("✔ Flocord installé.");
-        }
-
-        Err(_) => {
-            println!("⚠ Écriture directe refusée, tentative PowerShell...");
-
-            let temp = install.resources.join("flocord_temp.asar");
-
-            if fs::write(&temp, &asar_data).is_err() {
-                println!("❌ Impossible d'écrire le fichier Flocord.");
-                return;
-            }
-
-            let command = format!(
-                "Move-Item -Path '{}' -Destination '{}' -Force",
-                temp.to_string_lossy(),
-                app_asar.to_string_lossy()
-            );
-
-            let result = Command::new("powershell")
-                .args(["-Command", &command])
-                .output();
-
-            match result {
-                Ok(output) if output.status.success() => {
-                    println!("✔ Flocord installé.");
-                }
-
-                _ => {
-                    println!("❌ Installation impossible.");
-                    let _ = fs::remove_file(&temp);
-                    return;
-                }
-            }
-        }
+    if let Err(error) = write_asar(app, resources, &payload.bytes) {
+        println!("❌ {}", error);
+        return false;
     }
 
-    let marker = install.resources.join("flocord.lock");
-
-    if let Err(error) = fs::write(&marker, "Flocord installed") {
-        println!("⚠ Impossible de créer le marqueur : {}", error);
+    if let Err(error) = fs::write(resources.join("flocord.lock"), &payload.version) {
+        println!("⚠ Impossible d'écrire le marqueur : {}", error);
     }
 
-    logger::write(&format!(
-        "Flocord installé sur {} {}",
-        client.name, client.version
-    ));
+    for leftover in ["flocord_extract", "app_flocord.asar", "app.original.asar", "flocord_temp.asar"] {
+        let _ = remove_any(&resources.join(leftover));
+    }
+
+    registry::mark(&client.channel);
+    logger::write(&format!("Flocord v{} installé sur {} {}", payload.version, client.name, info.version));
 
     println!();
-    println!("================================");
-    println!("   Installation terminée !");
-    println!("================================");
-    println!();
-    println!("Vous pouvez maintenant lancer Discord.");
+    println!("\x1b[32m✔ Flocord v{} installé sur {}.\x1b[0m", payload.version, client.name);
+    true
 }

@@ -1,5 +1,9 @@
+// Récupère la dernière version de Flocord (version.json sur GitHub) et télécharge l'asar si l'embarqué est dépassé.
+
 use std::fs;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -8,10 +12,15 @@ const VERSION_URL: &str =
 
 static EMBEDDED_MANIFEST: &str = include_str!("../version.json");
 
-#[derive(Deserialize)]
-struct VersionManifest {
-    version: String,
-    url: String,
+#[derive(Deserialize, Clone)]
+pub struct VersionManifest {
+    pub version: String,
+    pub url: String,
+}
+
+pub struct Payload {
+    pub bytes: Vec<u8>,
+    pub version: String,
 }
 
 pub fn embedded_version() -> String {
@@ -21,83 +30,109 @@ pub fn embedded_version() -> String {
 }
 
 fn cache_path() -> PathBuf {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    PathBuf::from(local).join("Flocord").join("desktop.asar")
+    crate::registry::data_dir().join("desktop.asar")
 }
 
-fn version_gt(a: &str, b: &str) -> bool {
-    let parse = |v: &str| -> (u32, u32, u32) {
-        let p: Vec<u32> = v.split('.').map(|x| x.parse().unwrap_or(0)).collect();
-        (
-            p.first().copied().unwrap_or(0),
-            p.get(1).copied().unwrap_or(0),
-            p.get(2).copied().unwrap_or(0),
-        )
-    };
-    parse(a) > parse(b)
+pub fn version_gt(a: &str, b: &str) -> bool {
+    crate::detect::parse_version(a) > crate::detect::parse_version(b)
 }
 
-pub fn check_and_update(embedded: &[u8]) -> Vec<u8> {
+pub fn http(timeout: u64) -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(timeout))
+        .user_agent(format!("FlocordCLI/{}", embedded_version()))
+        .build()
+        .ok()
+}
+
+/// Dernier manifest publié, ou None hors ligne
+pub fn latest_manifest() -> Option<VersionManifest> {
+    let text = http(6)?.get(VERSION_URL).send().ok()?.text().ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Télécharge un fichier en affichant une barre de progression
+pub fn download(url: &str, label: &str) -> Option<Vec<u8>> {
+    let client = http(60)?;
+    let mut response = client.get(url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut last_percent = 101;
+
+    loop {
+        let read = response.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+
+        if total > 0 {
+            let percent = (bytes.len() as u64 * 100 / total) as usize;
+            if percent != last_percent {
+                last_percent = percent;
+                let filled = percent / 4;
+                print!(
+                    "\r  {} [{}{}] {:>3}%  {:.1} / {:.1} Mo",
+                    label,
+                    "█".repeat(filled),
+                    "░".repeat(25 - filled),
+                    percent,
+                    bytes.len() as f64 / 1_048_576.0,
+                    total as f64 / 1_048_576.0
+                );
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+
+    println!();
+    Some(bytes)
+}
+
+/// L'asar à installer : la dernière version en ligne si elle est plus récente que l'embarquée, sinon l'embarquée.
+pub fn check_and_update(embedded: &[u8]) -> Payload {
     let embedded_version = embedded_version();
+    let fallback = || Payload { bytes: embedded.to_vec(), version: embedded_version.clone() };
 
     print!("  Vérification des mises à jour Flocord...");
+    let _ = io::stdout().flush();
 
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            println!(" erreur réseau.");
-            return embedded.to_vec();
-        }
-    };
-
-    let text = match client.get(VERSION_URL).send().and_then(|r| r.text()) {
-        Ok(t) => t,
-        Err(_) => {
-            println!(" hors ligne, version embarquée utilisée.");
-            return embedded.to_vec();
-        }
-    };
-
-    let manifest: VersionManifest = match serde_json::from_str(&text) {
-        Ok(m) => m,
-        Err(_) => {
-            println!(" manifest invalide.");
-            return embedded.to_vec();
-        }
+    let Some(manifest) = latest_manifest() else {
+        println!(" hors ligne, version embarquée (v{}) utilisée.", embedded_version);
+        return fallback();
     };
 
     if !version_gt(&manifest.version, &embedded_version) {
         println!(" à jour (v{}).", embedded_version);
-        return embedded.to_vec();
+        return fallback();
     }
 
     println!();
-    println!(
-        "  Mise à jour disponible : v{} → v{}",
-        embedded_version, manifest.version
-    );
-    print!("  Téléchargement...");
-
-    let bytes = match client.get(&manifest.url).send().and_then(|r| r.bytes()) {
-        Ok(b) => b.to_vec(),
-        Err(_) => {
-            println!(" échec, version embarquée utilisée.");
-            return embedded.to_vec();
-        }
-    };
+    println!("  Mise à jour disponible : v{} → v{}", embedded_version, manifest.version);
 
     let cache = cache_path();
-
-    if let Some(parent) = cache.parent() {
-        let _ = fs::create_dir_all(parent);
+    let cache_version = cache.with_extension("version");
+    if fs::read_to_string(&cache_version).map(|v| v.trim() == manifest.version).unwrap_or(false) {
+        if let Ok(bytes) = fs::read(&cache) {
+            println!("  ✔ v{} déjà téléchargée.", manifest.version);
+            return Payload { bytes, version: manifest.version };
+        }
     }
 
+    let Some(bytes) = download(&manifest.url, "Téléchargement") else {
+        println!("  ⚠ Téléchargement impossible, version embarquée utilisée.");
+        return fallback();
+    };
+
+    let _ = fs::create_dir_all(crate::registry::data_dir());
     let _ = fs::write(&cache, &bytes);
+    let _ = fs::write(&cache_version, &manifest.version);
 
-    println!(" OK (v{}).", manifest.version);
-
-    bytes
+    println!("  ✔ Flocord v{} prêt.", manifest.version);
+    Payload { bytes, version: manifest.version }
 }

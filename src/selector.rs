@@ -1,47 +1,30 @@
-use std::io::{self, Write};
-
 use crate::client::DiscordClient;
+use crate::status::ClientStatus;
+use crate::ui::{self, DIM, RESET, VIOLET};
 
-pub fn select_discord(targets: &Vec<DiscordClient>) -> Option<DiscordClient> {
+/// Choix d'un Discord parmi plusieurs, avec l'état de Flocord sur chacun
+pub fn select(entries: &[ClientStatus]) -> Option<DiscordClient> {
     println!();
-    println!("================================");
-    println!("     Clients Discord disponibles");
-    println!("================================");
-    println!();
-
-    for (index, client) in targets.iter().enumerate() {
-        println!("[{}] {}", index + 1, client.name);
-
-        println!("    Canal : {}", client.channel);
-
-        println!("    Version : {}", client.version);
-
-        println!();
+    for (index, entry) in entries.iter().enumerate() {
+        println!(
+            "  {}[{}]{} {:<14}{}{:<14}{} {}",
+            VIOLET,
+            index + 1,
+            RESET,
+            entry.client.name,
+            DIM,
+            entry.client.version,
+            RESET,
+            entry.state.label()
+        );
     }
-
-    println!("[0] Retour");
+    println!("  {}[0]{} Retour", VIOLET, RESET);
     println!();
 
-    print!("Choix : ");
-    io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-
-    io::stdin().read_line(&mut input).expect("Erreur lecture");
-
-    let choice: usize = match input.trim().parse() {
-        Ok(value) => value,
-
-        Err(_) => {
-            println!("Choix invalide.");
-
-            return None;
-        }
-    };
-
-    if choice == 0 || choice > targets.len() {
+    let choice: usize = ui::prompt("> ").parse().ok()?;
+    if choice == 0 || choice > entries.len() {
         return None;
     }
 
-    Some(targets[choice - 1].clone())
+    Some(entries[choice - 1].client.clone())
 }

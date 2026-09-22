@@ -1,68 +1,48 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn create_backup(discord_path: &PathBuf, app_asar: &PathBuf) -> bool {
-    let backup_path = discord_path.join("FlocordBackup");
+pub fn backup_file(resources: &Path) -> PathBuf {
+    resources.join("FlocordBackup").join("app.asar")
+}
 
-    if !backup_path.exists() {
-        if let Err(error) = fs::create_dir_all(&backup_path) {
+/// Copie le fichier Discord original (jamais l'asar Flocord) dans FlocordBackup/app.asar, une seule fois.
+pub fn create_backup(resources: &Path, original: &Path) -> bool {
+    let backup = backup_file(resources);
+
+    if backup.exists() {
+        println!("✔ Backup déjà présent.");
+        return true;
+    }
+
+    if let Some(folder) = backup.parent() {
+        if let Err(error) = fs::create_dir_all(folder) {
             println!("❌ Impossible de créer le dossier backup : {}", error);
-
             return false;
         }
     }
 
-    let backup_file = backup_path.join("app.asar");
-
-    if backup_file.exists() {
-        println!("✔ Backup app.asar déjà présent.");
-
+    if fs::copy(original, &backup).is_ok() {
+        println!("✔ Discord original sauvegardé.");
         return true;
     }
 
-    println!("Copie de app.asar...");
+    // Certains antivirus bloquent la copie directe : PowerShell passe généralement
+    let command = format!(
+        "Copy-Item -LiteralPath '{}' -Destination '{}' -Force",
+        original.to_string_lossy(),
+        backup.to_string_lossy()
+    );
+    let ok = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &command])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
-    match fs::copy(app_asar, &backup_file) {
-        Ok(_) => {
-            println!("✔ app.asar sauvegardé : {}", backup_file.display());
-
-            true
-        }
-
-        Err(_) => {
-            println!("⚠ Copie classique refusée.");
-
-            println!("Tentative avec PowerShell...");
-
-            let source = app_asar.to_string_lossy();
-
-            let destination = backup_file.to_string_lossy();
-
-            let command = format!(
-                "Copy-Item -Path '{}' -Destination '{}' -Force",
-                source, destination
-            );
-
-            let result = Command::new("powershell")
-                .args(["-Command", &command])
-                .output();
-
-            match result {
-                Ok(output) if output.status.success() => {
-                    println!("✔ app.asar sauvegardé.");
-
-                    true
-                }
-
-                _ => {
-                    println!("❌ Impossible de sauvegarder app.asar.");
-
-                    println!("Fichier : {}", app_asar.display());
-
-                    false
-                }
-            }
-        }
+    if ok {
+        println!("✔ Discord original sauvegardé.");
+    } else {
+        println!("❌ Impossible de sauvegarder {}", original.display());
     }
+    ok
 }

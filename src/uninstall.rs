@@ -1,106 +1,70 @@
+use crate::backup;
 use crate::client::DiscordClient;
 use crate::detect;
+use crate::logger;
+use crate::registry;
 
 use std::fs;
 
-pub fn uninstall(client: &DiscordClient) {
+/// Remet le Discord original en place et retire toute trace de Flocord dans le dossier courant.
+pub fn uninstall(client: &DiscordClient) -> bool {
     println!();
-    println!("================================");
-    println!("     Désinstallation Flocord");
-    println!("================================");
-    println!();
+    println!("Client  : {} ({})", client.name, client.channel);
 
-    let install = match detect::detect(client) {
-        Some(value) => value,
-
-        None => {
-            println!("❌ Aucun Discord compatible trouvé.");
-            return;
-        }
+    let Some(info) = detect::detect(client) else {
+        println!("❌ Aucun dossier Discord exploitable.");
+        return false;
     };
 
-    println!("Client  : {}", client.name);
-    println!("Version : {}", install.version);
+    println!("Discord : {}", info.version);
     println!();
 
-    if !install.installed {
-        println!("✔ Flocord n'est pas installé.");
-        return;
+    let resources = &info.resources;
+    let app = &info.app_asar;
+    let original = &info.original_asar;
+    let saved = backup::backup_file(resources);
+
+    let has_flocord = info.installed || original.exists() || app.is_dir();
+    if !has_flocord {
+        println!("✔ Flocord n'est pas installé sur ce Discord.");
+        registry::unmark(&client.channel);
+        return true;
     }
 
-    let resources = install.resources;
-
-    let app_asar = resources.join("app.asar");
-
-    let backup = resources
-        .join("FlocordBackup")
-        .join("app.asar");
-
-    if !backup.exists() {
-        println!("❌ Backup introuvable.");
-        return;
+    // Retire l'asar (ou le dossier relais) Flocord
+    let removed = if app.is_dir() { fs::remove_dir_all(app) } else if app.exists() { fs::remove_file(app) } else { Ok(()) };
+    if let Err(error) = removed {
+        println!("❌ Impossible de retirer app.asar : {}", error);
+        return false;
     }
 
-    if app_asar.exists() {
-        if let Err(error) = fs::remove_file(&app_asar) {
-            println!("❌ Impossible de supprimer app.asar : {}", error);
-            return;
+    // Remet l'original : _app.asar de préférence (c'est le fichier exact de Discord), sinon le backup
+    if original.exists() {
+        if let Err(error) = fs::rename(original, app) {
+            println!("❌ Impossible de restaurer _app.asar : {}", error);
+            return false;
         }
-    }
-
-    if let Err(error) = fs::copy(&backup, &app_asar) {
-        println!("❌ Impossible de restaurer le backup : {}", error);
-        return;
-    }
-
-    // Suppression de _app.asar (Discord original utilisé par le patcher)
-    let original_asar = resources.join("_app.asar");
-
-    if original_asar.exists() {
-        let _ = fs::remove_file(&original_asar);
-    }
-
-    // Nettoyage des artefacts d'anciennes installations
-    let extract = resources.join("flocord_extract");
-
-    if extract.exists() {
-        let _ = fs::remove_dir_all(&extract);
-    }
-
-    let temp = resources.join("app_flocord.asar");
-
-    if temp.exists() {
-        let _ = fs::remove_file(&temp);
-    }
-
-    let app_original = resources.join("app.original.asar");
-
-    if app_original.exists() {
-        let _ = fs::remove_file(&app_original);
-    }
-
-    let marker = resources.join("flocord.lock");
-
-    if marker.exists() {
-
-    if let Err(error) = fs::remove_file(&marker) {
-
-        println!("⚠ Impossible de supprimer le marqueur Flocord : {}", error);
-
+        println!("✔ Discord original restauré.");
+    } else if saved.exists() {
+        if let Err(error) = fs::copy(&saved, app) {
+            println!("❌ Impossible de restaurer le backup : {}", error);
+            return false;
+        }
+        println!("✔ Discord original restauré depuis le backup.");
     } else {
-
-        println!("✔ Marqueur Flocord supprimé.");
-
+        println!("❌ Discord original introuvable. Réinstallez Discord.");
+        return false;
     }
 
-}
+    for leftover in ["flocord.lock", "flocord_extract", "app_flocord.asar", "app.original.asar", "flocord_temp.asar"] {
+        let path = resources.join(leftover);
+        let _ = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+    }
+
+    registry::unmark(&client.channel);
+    logger::write(&format!("Flocord désinstallé de {} {}", client.name, info.version));
 
     println!();
-    println!("✔ Flocord désinstallé.");
-
-    crate::logger::write(&format!(
-    "Flocord désinstallé sur {} {}",
-    client.name,
-    client.version
-));
+    println!("\x1b[32m✔ Flocord désinstallé de {}.\x1b[0m", client.name);
+    true
 }

@@ -1,535 +1,284 @@
-use std::io::{self, Write};
+use std::process::Command;
+use std::sync::mpsc;
 
-mod client;
-mod discord;
-mod logger;
-mod process;
-mod selector;
-mod version;
-
+mod args;
+mod autorepair;
 mod backup;
-mod installer;
-mod repair;
+mod client;
 mod detect;
-mod uninstall;
+mod discord;
+mod installer;
+mod logger;
 mod openasar;
 mod openasar_detect;
+mod process;
+mod registry;
+mod repair;
+mod selector;
+mod selfupdate;
+mod status;
+mod ui;
+mod uninstall;
 mod updater;
+mod version;
+
+use args::Action;
+use client::DiscordClient;
+use ui::{DIM, RESET, VIOLET};
+
+const SUPPORT_URL: &str = "https://discord.gg/CH45T3PH5r";
 
 fn main() {
+    selfupdate::cleanup();
+    ui::enable_ansi();
     logger::init();
 
-    clear_screen();
-    banner();
+    let args = args::parse();
+
+    match args.action {
+        Some(Action::Help) => println!("{}", args::help()),
+        Some(action) => headless(action, &args),
+        None => interactive(),
+    }
+}
+
+// ---------- Mode ligne de commande ----------
+
+fn headless(action: Action, args: &args::Args) {
+    match action {
+        Action::Status => {
+            for entry in status::all() {
+                println!("{} ({}) : {}", entry.client.name, entry.client.channel, entry.state.label());
+            }
+        }
+        Action::EnableProtection => {
+            autorepair::enable();
+        }
+        Action::DisableProtection => {
+            autorepair::disable();
+        }
+        Action::Repair if args.silent && args.channel.is_none() => autorepair::run_silent(),
+        Action::Install | Action::Repair | Action::Uninstall => {
+            let clients: Vec<DiscordClient> = discord::find_discord()
+                .into_iter()
+                .filter(|c| args.channel.as_deref().map(|ch| c.channel.to_lowercase() == ch).unwrap_or(true))
+                .collect();
+
+            if clients.is_empty() {
+                println!("Aucun Discord trouvé.");
+                return;
+            }
+
+            for client in clients {
+                run_action(action, &client, args.silent);
+            }
+        }
+        Action::Help => {}
+    }
+}
+
+/// Ferme Discord si besoin, exécute l'action, relance Discord. Retourne true si l'action a réussi.
+fn run_action(action: Action, client: &DiscordClient, silent: bool) -> bool {
+    let Some(was_running) = ensure_closed(client, silent) else {
+        println!("Opération annulée.");
+        return false;
+    };
+
+    let ok = match action {
+        Action::Install => installer::install(client, false),
+        Action::Repair => repair::repair(client),
+        Action::Uninstall => uninstall::uninstall(client),
+        _ => false,
+    };
+
+    if !ok {
+        println!();
+        println!("❌ L'opération a échoué. Journal : {}", logger::log_file().display());
+        return false;
+    }
+
+    if silent {
+        if was_running {
+            process::launch_discord(&client.path, &client.executable);
+        }
+    } else if ui::confirm(&format!("Relancer {} maintenant ?", client.name)) {
+        if process::launch_discord(&client.path, &client.executable) {
+            println!("✔ {} relancé.", client.name);
+        } else {
+            println!("❌ Impossible de relancer {}.", client.name);
+        }
+    }
+
+    true
+}
+
+/// S'assure que Discord est fermé. Some(true) s'il tournait, Some(false) sinon, None si l'utilisateur annule.
+fn ensure_closed(client: &DiscordClient, silent: bool) -> Option<bool> {
+    if !process::is_process_running(&client.path) {
+        return Some(false);
+    }
+
+    if !silent {
+        println!();
+        println!("⚠ {} est ouvert et doit être fermé pour continuer.", client.name);
+        if !ui::confirm(&format!("Fermer {} maintenant ?", client.name)) {
+            return None;
+        }
+    }
+
+    process::close_discord(&client.path);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    if process::is_process_running(&client.path) {
+        println!("❌ {} est toujours ouvert. Fermez-le manuellement puis réessayez.", client.name);
+        return None;
+    }
+
+    println!("✔ {} fermé.", client.name);
+    Some(true)
+}
+
+// ---------- Menu interactif ----------
+
+fn interactive() {
+    autorepair::refresh_if_enabled();
+
+    // La vérification de mise à jour se fait en arrière-plan pour ne pas ralentir l'ouverture du menu
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(selfupdate::available());
+    });
+    let mut update_check: Option<Option<String>> = None;
 
     loop {
-        println!();
-        println!("Que voulez-vous faire ?");
-        println!();
-
-        println!("\x1b[35m[1]\x1b[0m Détecter Discord");
-        println!("\x1b[35m[2]\x1b[0m Installer Flocord");
-        println!("\x1b[35m[3]\x1b[0m Réparer Flocord");
-        println!("\x1b[35m[4]\x1b[0m Désinstaller Flocord");
-        println!("\x1b[35m[5]\x1b[0m Installer OpenAsar");
-        println!("\x1b[35m[6]\x1b[0m Désinstaller OpenAsar");
-        println!("\x1b[35m[7]\x1b[0m Quitter");
-
-        println!();
-
-        print!("> ");
-        io::stdout().flush().unwrap();
-
-        let mut choice = String::new();
-
-        io::stdin().read_line(&mut choice).expect("Erreur lecture");
-
-        match choice.trim() {
-            "1" => detect_discord(),
-
-            "2" => install(),
-
-            "3" => repair(),
-
-            "4" => uninstall(),
-
-            "5" => openasar_install(),
-
-            "6" => openasar_uninstall(),
-
-            "7" => {
-                println!("Fermeture de Flocord Installer...");
-                break;
+        if update_check.is_none() {
+            if let Ok(result) = receiver.try_recv() {
+                update_check = Some(result);
             }
+        }
+        let newer = update_check.clone().flatten();
 
-            _ => {
-                println!("Choix invalide.");
+        ui::clear_screen();
+        ui::banner(&updater::embedded_version());
+        overview();
+
+        println!();
+        match &newer {
+            Some(v) => println!("  {}⬆ Installeur v{} disponible (choix 9){}", VIOLET, v, RESET),
+            None if update_check.is_none() => println!("  {}Vérification des mises à jour...{}", DIM, RESET),
+            None => println!("  {}Installeur à jour{}", DIM, RESET),
+        }
+
+        let protection = if autorepair::is_enabled() { "\x1b[32mactivée\x1b[0m" } else { "\x1b[90mdésactivée\x1b[0m" };
+
+        println!();
+        println!("  {}[1]{} Installer Flocord", VIOLET, RESET);
+        println!("  {}[2]{} Réparer Flocord", VIOLET, RESET);
+        println!("  {}[3]{} Désinstaller Flocord", VIOLET, RESET);
+        println!("  {}[4]{} Protection automatique ({})", VIOLET, RESET, protection);
+        println!("  {}[5]{} Installer OpenAsar", VIOLET, RESET);
+        println!("  {}[6]{} Désinstaller OpenAsar", VIOLET, RESET);
+        println!("  {}[7]{} Serveur support Discord", VIOLET, RESET);
+        println!("  {}[8]{} Ouvrir le journal", VIOLET, RESET);
+        if newer.is_some() {
+            println!("  {}[9]{} Mettre à jour l'installeur", VIOLET, RESET);
+        }
+        println!("  {}[0]{} Quitter", VIOLET, RESET);
+        println!();
+
+        match ui::prompt("> ").as_str() {
+            "1" => with_client("Installation", |c| run_action(Action::Install, c, false)),
+            "2" => with_client("Réparation", |c| run_action(Action::Repair, c, false)),
+            "3" => with_client("Désinstallation", |c| run_action(Action::Uninstall, c, false)),
+            "4" => toggle_protection(),
+            "5" => with_client("OpenAsar", |c| {
+                ensure_closed(c, false).is_some() && {
+                    openasar::install(c);
+                    true
+                }
+            }),
+            "6" => with_client("OpenAsar", |c| {
+                ensure_closed(c, false).is_some() && {
+                    openasar::uninstall(c);
+                    true
+                }
+            }),
+            "7" => open(SUPPORT_URL),
+            "8" => open(&logger::log_file().to_string_lossy()),
+            "9" if newer.is_some() => {
+                selfupdate::run(newer.as_deref().unwrap_or_default());
+                ui::pause();
             }
+            "0" | "q" => break,
+            _ => {}
         }
     }
 }
 
-fn banner() {
-    println!("\x1b[35m");
+fn overview() {
+    ui::section("Discord détectés");
 
-    println!(
-        r#"
-▄▀▀▀█ ▀     ▄▀▀▀▄ ▄▀▀▀█ ▄▀▀▀▄ ▀▀▀▀▄ ▀▀▀▀▄
-▄▀▀   █   ▄ ▄   █ ▄   ▄ ▄   █ █▀▀▀▄ █   █
-▀      ▀▀▀▀  ▀▀▀   ▀▀▀▀  ▀▀▀  ▀   ▀ ▀▀▀▀
-"#
-    );
-
-    println!("\x1b[0m");
-
-    println!("============================================");
-    println!("          Flocord Installer v{}", updater::embedded_version());
-    println!("============================================");
-}
-
-fn clear_screen() {
-    print!("\x1B[2J\x1B[1;1H");
-}
-
-fn ask_relaunch(client: &client::DiscordClient) {
-    println!();
-    println!("Voulez-vous relancer {} maintenant ?", client.name);
-    println!("[1] Oui");
-    println!("[2] Non");
-
-    print!("> ");
-    io::stdout().flush().unwrap();
-
-    let mut choice = String::new();
-    io::stdin().read_line(&mut choice).unwrap();
-
-    if choice.trim() != "1" {
+    let entries = status::all();
+    if entries.is_empty() {
+        println!("  Aucun Discord trouvé dans %LOCALAPPDATA%.");
         return;
     }
 
-    if process::launch_discord(&client.path, &client.executable) {
-        println!("✔ {} relancé.", client.name);
-        logger::write(&format!("{} relancé", client.name));
-    } else {
-        println!("❌ Impossible de relancer {}.", client.name);
-        logger::write(&format!("Échec relance {}", client.name));
+    for entry in entries {
+        println!(
+            "  {:<14}{}{:<14}{} {}",
+            format!("{}", entry.client.name),
+            DIM,
+            entry.client.version,
+            RESET,
+            entry.state.label()
+        );
     }
 }
 
-fn install() {
-    println!();
-    println!("================================");
-    println!("       Installation Flocord");
-    println!("================================");
+fn with_client(title: &str, action: impl Fn(&DiscordClient) -> bool) {
+    ui::section(title);
 
-    let targets = discord::find_discord();
-
-    if targets.is_empty() {
-        println!("Aucun client Discord trouvé.");
-        return;
-    }
-
-    let selected = match selector::select_discord(&targets) {
-        Some(client) => client,
-
-        None => {
-            println!("Installation annulée.");
+    let entries = status::all();
+    let client = match entries.len() {
+        0 => {
+            println!("  Aucun Discord trouvé.");
+            ui::pause();
             return;
         }
+        1 => entries.into_iter().next().map(|e| e.client),
+        _ => selector::select(&entries),
     };
 
-    println!();
+    let Some(client) = client else {
+        return;
+    };
 
-    println!("Client sélectionné :");
-    println!("  Nom : {}", selected.name);
-    println!("  Canal : {}", selected.channel);
-    println!("  Version : {}", selected.version);
-    println!("  Chemin : {}", selected.path.display());
-    println!("  Executable : {}", selected.executable.display());
+    action(&client);
+    ui::pause();
+}
 
-    logger::write(&format!(
-        "Client sélectionné : {} {}",
-        selected.name, selected.version
-    ));
-
-    println!();
-
-    if process::is_process_running(&selected.path) {
-        println!("⚠ {} est actuellement ouvert.", selected.name);
-
-        println!();
-
-        println!("{} doit être fermé avant l'installation.", selected.name);
-
-        println!();
-
-        println!("[1] Fermer {} et continuer", selected.name);
-
-        println!("[2] Annuler");
-
-        print!("> ");
-        io::stdout().flush().unwrap();
-
-        let mut choice = String::new();
-
-        io::stdin().read_line(&mut choice).unwrap();
-
-        match choice.trim() {
-            "1" => {
-                println!();
-
-                println!("Fermeture de Discord...");
-
-                if process::close_discord(&selected.path) {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-
-                    if process::is_process_running(&selected.path) {
-                        println!("❌ {} est toujours ouvert.", selected.name);
-
-                        println!("Fermez-le manuellement avant de continuer.");
-
-                        return;
-                    }
-
-                    println!("✔ {} fermé.", selected.name);
-
-                    logger::write(&format!("{} fermé avec succès", selected.name));
-                } else {
-                    println!("❌ Impossible de fermer {}.", selected.name);
-
-                    println!("Fermez Discord manuellement avant de continuer.");
-
-                    return;
-                }
-            }
-
-            _ => {
-                println!("Installation annulée.");
-                return;
-            }
+fn toggle_protection() {
+    ui::section("Protection automatique");
+    if autorepair::is_enabled() {
+        println!("  Au démarrage de Windows, Flocord est réparé automatiquement si Discord s'est mis à jour.");
+        if ui::confirm("Désactiver la protection automatique ?") {
+            autorepair::disable();
         }
     } else {
-        println!("✔ {} est déjà fermé.", selected.name);
-
-        logger::write(&format!("{} déjà fermé", selected.name));
-    }
-
-    println!();
-
-    installer::install(&selected);
-
-    logger::write("Préparation installation terminée");
-
-    ask_relaunch(&selected);
-}
-
-fn repair() {
-    println!();
-    println!("================================");
-    println!("       Réparation Flocord");
-    println!("================================");
-
-    let targets = discord::find_discord();
-
-    if targets.is_empty() {
-        println!("Aucun client Discord trouvé.");
-        return;
-    }
-
-    let selected = match selector::select_discord(&targets) {
-        Some(client) => client,
-
-        None => {
-            println!("Réparation annulée.");
-            return;
+        println!("  Quand Discord se met à jour, il efface Flocord. La protection le réinstalle");
+        println!("  toute seule au démarrage de Windows, sans rien demander.");
+        if registry::marked().is_empty() {
+            println!();
+            println!("  ⚠ Installez d'abord Flocord : la protection ne s'applique qu'aux Discord installés par cet outil.");
         }
-    };
-
-    println!();
-
-    println!("Client sélectionné :");
-    println!("  Nom : {}", selected.name);
-    println!("  Canal : {}", selected.channel);
-    println!("  Version : {}", selected.version);
-    println!("  Chemin : {}", selected.path.display());
-    println!("  Executable : {}", selected.executable.display());
-
-    logger::write(&format!(
-        "Client sélectionné : {} {}",
-        selected.name, selected.version
-    ));
-
-    println!();
-
-    if process::is_process_running(&selected.path) {
-        println!("⚠ {} est actuellement ouvert.", selected.name);
-
-        println!();
-
-        println!("{} doit être fermé avant la réparation.", selected.name);
-
-        println!();
-
-        println!("[1] Fermer {} et continuer", selected.name);
-        println!("[2] Annuler");
-
-        print!("> ");
-        io::stdout().flush().unwrap();
-
-        let mut choice = String::new();
-
-        io::stdin().read_line(&mut choice).unwrap();
-
-        match choice.trim() {
-            "1" => {
-                println!();
-
-                println!("Fermeture de Discord...");
-
-                if process::close_discord(&selected.path) {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-
-                    if process::is_process_running(&selected.path) {
-                        println!("❌ {} est toujours ouvert.", selected.name);
-                        println!("Fermez-le manuellement avant de continuer.");
-                        return;
-                    }
-
-                    println!("✔ {} fermé.", selected.name);
-
-                    logger::write(&format!("{} fermé avec succès", selected.name));
-                } else {
-                    println!("❌ Impossible de fermer {}.", selected.name);
-                    println!("Fermez Discord manuellement avant de continuer.");
-                    return;
-                }
-            }
-
-            _ => {
-                println!("Réparation annulée.");
-                return;
-            }
+        if ui::confirm("Activer la protection automatique ?") {
+            autorepair::enable();
         }
-    } else {
-        println!("✔ {} est déjà fermé.", selected.name);
-
-        logger::write(&format!("{} déjà fermé", selected.name));
     }
-
-    println!();
-
-    repair::repair(&selected);
-
-    logger::write("Réparation terminée");
-
-    ask_relaunch(&selected);
+    ui::pause();
 }
 
-fn uninstall() {
-    println!();
-    println!("================================");
-    println!("     Désinstallation Flocord");
-    println!("================================");
-
-    let targets = discord::find_discord();
-
-    if targets.is_empty() {
-        println!("Aucun client Discord trouvé.");
-        return;
-    }
-
-    let selected = match selector::select_discord(&targets) {
-        Some(client) => client,
-
-        None => {
-            println!("Désinstallation annulée.");
-            return;
-        }
-    };
-
-    println!();
-
-    println!("Client sélectionné :");
-    println!("  Nom : {}", selected.name);
-    println!("  Canal : {}", selected.channel);
-    println!("  Version : {}", selected.version);
-    println!("  Chemin : {}", selected.path.display());
-    println!("  Executable : {}", selected.executable.display());
-
-    logger::write(&format!(
-        "Client sélectionné : {} {}",
-        selected.name, selected.version
-    ));
-
-    println!();
-
-    if process::is_process_running(&selected.path) {
-        println!("⚠ {} est actuellement ouvert.", selected.name);
-
-        println!();
-
-        println!("{} doit être fermé avant la désinstallation.", selected.name);
-
-        println!();
-
-        println!("[1] Fermer {} et continuer", selected.name);
-        println!("[2] Annuler");
-
-        print!("> ");
-        io::stdout().flush().unwrap();
-
-        let mut choice = String::new();
-
-        io::stdin().read_line(&mut choice).unwrap();
-
-        match choice.trim() {
-            "1" => {
-                println!();
-
-                println!("Fermeture de Discord...");
-
-                if process::close_discord(&selected.path) {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-
-                    if process::is_process_running(&selected.path) {
-                        println!("❌ {} est toujours ouvert.", selected.name);
-                        println!("Fermez-le manuellement avant de continuer.");
-                        return;
-                    }
-
-                    println!("✔ {} fermé.", selected.name);
-
-                    logger::write(&format!("{} fermé avec succès", selected.name));
-                } else {
-                    println!("❌ Impossible de fermer {}.", selected.name);
-                    println!("Fermez Discord manuellement avant de continuer.");
-                    return;
-                }
-            }
-
-            _ => {
-                println!("Désinstallation annulée.");
-                return;
-            }
-        }
-    } else {
-        println!("✔ {} est déjà fermé.", selected.name);
-
-        logger::write(&format!("{} déjà fermé", selected.name));
-    }
-
-    println!();
-
-    uninstall::uninstall(&selected);
-
-    logger::write("Désinstallation terminée");
-
-    ask_relaunch(&selected);
-}
-
-fn openasar_install() {
-
-    let targets = discord::find_discord();
-
-
-    if targets.is_empty() {
-
-        println!("Aucun Discord trouvé.");
-        return;
-
-    }
-
-
-    let selected = match selector::select_discord(&targets) {
-
-        Some(client) => client,
-
-        None => return,
-
-    };
-
-
-    if process::is_process_running(&selected.path) {
-
-        process::close_discord(&selected.path);
-
-    }
-
-
-    openasar::install(&selected);
-
-    ask_relaunch(&selected);
-}
-
-
-
-fn openasar_uninstall() {
-
-    let targets = discord::find_discord();
-
-
-    if targets.is_empty() {
-
-        println!("Aucun Discord trouvé.");
-        return;
-
-    }
-
-
-    let selected = match selector::select_discord(&targets) {
-
-        Some(client) => client,
-
-        None => return,
-
-    };
-
-
-    if process::is_process_running(&selected.path) {
-
-        process::close_discord(&selected.path);
-
-    }
-
-
-    openasar::uninstall(&selected);
-
-    ask_relaunch(&selected);
-}
-
-fn detect_discord() {
-    println!();
-    println!("================================");
-    println!("        Discord détectés");
-    println!("================================");
-    println!();
-
-    let clients = discord::find_discord();
-
-    if clients.is_empty() {
-        println!("Aucun Discord trouvé.");
-        return;
-    }
-
-    for client in clients {
-        println!("✔ {}", client.name);
-
-        println!("  Canal : {}", client.channel);
-
-        println!("  Chemin :");
-
-        println!("  {}", client.path.display());
-
-        println!();
-
-        println!("  Version : {}", client.version);
-
-        println!("  Executable :");
-
-        println!("  {}", client.executable.display());
-
-        println!();
-
-        println!("-------------------------");
-    }
+fn open(target: &str) {
+    let _ = Command::new("cmd").args(["/C", "start", "", target]).spawn();
 }
