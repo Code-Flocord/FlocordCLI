@@ -3,59 +3,49 @@ use std::path::PathBuf;
 use crate::client::DiscordClient;
 use crate::version;
 
+/// Les quatre canaux Discord installables sous %LOCALAPPDATA% : (dossier, nom du canal)
+const CANDIDATES: [(&str, &str); 4] = [
+    ("Discord", "Stable"),
+    ("DiscordPTB", "PTB"),
+    ("DiscordCanary", "Canary"),
+    ("DiscordDevelopment", "Development"),
+];
+
 pub fn find_discord() -> Vec<DiscordClient> {
     let mut clients = Vec::new();
 
-    let local = match std::env::var("LOCALAPPDATA") {
-        Ok(value) => PathBuf::from(value),
-
-        Err(_) => return clients,
+    let Ok(local) = std::env::var("LOCALAPPDATA") else {
+        return clients;
     };
+    let local = PathBuf::from(local);
 
-    let candidates = [
-        ("Discord", "Stable"),
-        ("DiscordPTB", "PTB"),
-        ("DiscordCanary", "Canary"),
-    ];
-
-    for (folder, channel) in candidates {
+    for (folder, channel) in CANDIDATES {
         let path = local.join(folder);
-
         if !path.exists() {
             continue;
         }
 
-        let version_path = match version::find_discord_version(&path) {
-            Some(value) => value,
-
-            None => continue,
+        let Some(version_path) = version::find_discord_version(&path) else {
+            continue;
         };
 
         let version = version_path
             .file_name()
-            .unwrap()
+            .unwrap_or_default()
             .to_string_lossy()
             .replace("app-", "");
 
-        let executable = match folder {
-            "Discord" => version_path.join("Discord.exe"),
-
-            "DiscordPTB" => version_path.join("DiscordPTB.exe"),
-
-            "DiscordCanary" => version_path.join("DiscordCanary.exe"),
-
-            _ => continue,
-        };
+        // L'exécutable porte le nom du dossier : Discord.exe, DiscordPTB.exe, DiscordCanary.exe...
+        let executable = version_path.join(format!("{}.exe", folder));
+        if !executable.exists() {
+            continue;
+        }
 
         clients.push(DiscordClient {
             name: folder.to_string(),
-
             channel: channel.to_string(),
-
             path,
-
             version,
-
             executable,
         });
     }

@@ -17,19 +17,16 @@ pub fn open(target: &str) {
     let _ = hidden("cmd").args(["/C", "start", "", target]).spawn();
 }
 
+/// Le processus porte le nom du dossier d'installation : Discord.exe, DiscordPTB.exe,
+/// DiscordCanary.exe, DiscordDevelopment.exe
 fn get_process_name(path: &PathBuf) -> String {
-    let path_string = path.to_string_lossy().to_lowercase();
+    let folder = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-    if path_string.contains("discordptb") {
-        return "DiscordPTB.exe".to_string();
-    }
-
-    if path_string.contains("discordcanary") {
-        return "DiscordCanary.exe".to_string();
-    }
-
-    if path_string.contains("\\discord\\") {
-        return "Discord.exe".to_string();
+    if folder.to_lowercase().starts_with("discord") {
+        return format!("{}.exe", folder);
     }
 
     "Discord.exe".to_string()

@@ -57,7 +57,7 @@ struct Run {
     lines: Vec<String>,
     progress: Option<(f32, String)>,
     rx: Receiver<Step>,
-    done_rx: Receiver<(bool, bool)>,
+    done_rx: Receiver<(bool, Vec<DiscordClient>)>,
     started: Instant,
 }
 
@@ -65,7 +65,8 @@ struct Outcome {
     title: String,
     lines: Vec<String>,
     ok: bool,
-    relaunch: Option<DiscordClient>,
+    /// Les Discord qui tournaient avant l'opération et peuvent être relancés
+    relaunch: Vec<DiscordClient>,
 }
 
 enum Screen {
@@ -75,9 +76,16 @@ enum Screen {
     Done(Outcome),
 }
 
+/// Cible de l'assistant : un Discord précis, ou tous ceux détectés
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    One(usize),
+    All,
+}
+
 pub struct App {
     entries: Vec<status::ClientStatus>,
-    selected: Option<usize>,
+    selected: Option<Target>,
     action: Option<Action>,
     screen: Screen,
     protection: bool,
@@ -111,7 +119,7 @@ impl App {
 
         let entries = status::all();
         Self {
-            selected: if entries.len() == 1 { Some(0) } else { None },
+            selected: if entries.len() == 1 { Some(Target::One(0)) } else { None },
             entries,
             action: None,
             screen: Screen::PickClient,
@@ -126,8 +134,13 @@ impl App {
     fn refresh(&mut self) {
         self.entries = status::all();
         self.protection = autorepair::is_enabled();
-        if self.selected.map(|i| i >= self.entries.len()).unwrap_or(true) {
-            self.selected = if self.entries.len() == 1 { Some(0) } else { None };
+        let valid = match self.selected {
+            Some(Target::One(index)) => index < self.entries.len(),
+            Some(Target::All) => self.entries.len() > 1,
+            None => false,
+        };
+        if !valid {
+            self.selected = if self.entries.len() == 1 { Some(Target::One(0)) } else { None };
         }
     }
 
@@ -147,19 +160,31 @@ impl App {
         running
     }
 
-    fn client(&self) -> Option<&DiscordClient> {
-        self.selected.and_then(|i| self.entries.get(i)).map(|e| &e.client)
+
+    /// Tous les Discord ciblés par l'action en cours
+    fn targets(&self) -> Vec<DiscordClient> {
+        match self.selected {
+            Some(Target::One(index)) => self.entries.get(index).map(|e| e.client.clone()).into_iter().collect(),
+            Some(Target::All) => self.entries.iter().map(|e| e.client.clone()).collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Lance l'action choisie dans un thread ; Discord est fermé si besoin (l'utilisateur a été prévenu).
     fn start(&mut self, ctx: &egui::Context) {
-        let (Some(client), Some(action)) = (self.client().cloned(), self.action) else { return; };
+        let targets = self.targets();
+        let (Some(action), false) = (self.action, targets.is_empty()) else { return; };
 
-        let title = match action {
-            Action::Install => format!("Installation sur {}", client.name),
-            Action::Repair => format!("Réparation de {}", client.name),
-            Action::Uninstall => format!("Désinstallation de {}", client.name),
-            _ => client.name.clone(),
+        let what = match action {
+            Action::Install => "Installation",
+            Action::Repair => "Réparation",
+            Action::Uninstall => "Désinstallation",
+            _ => "Opération",
+        };
+        let title = if targets.len() == 1 {
+            format!("{} sur {}", what, targets[0].name)
+        } else {
+            format!("{} sur {} clients Discord", what, targets.len())
         };
 
         let (tx, rx) = mpsc::channel();
@@ -168,22 +193,37 @@ impl App {
 
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let was_running = process::is_process_running(&client.path);
-            if was_running {
-                say!("Fermeture de {}...", client.name);
-                process::close_discord(&client.path);
-                std::thread::sleep(Duration::from_secs(2));
+            let mut all_ok = true;
+            let mut relaunch = Vec::new();
+
+            for client in &targets {
+                if targets.len() > 1 {
+                    say!("");
+                    say!("── {}", client.name);
+                }
+
+                let was_running = process::is_process_running(&client.path);
+                if was_running {
+                    say!("Fermeture de {}...", client.name);
+                    process::close_discord(&client.path);
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+
+                let ok = match action {
+                    Action::Install => installer::install(client, false),
+                    Action::Repair => repair::repair(client),
+                    Action::Uninstall => uninstall::uninstall(client),
+                    _ => false,
+                };
+
+                all_ok &= ok;
+                if was_running && ok {
+                    relaunch.push(client.clone());
+                }
             }
 
-            let ok = match action {
-                Action::Install => installer::install(&client, false),
-                Action::Repair => repair::repair(&client),
-                Action::Uninstall => uninstall::uninstall(&client),
-                _ => false,
-            };
-
             say::set_sink(None);
-            let _ = done_tx.send((ok, was_running));
+            let _ = done_tx.send((all_ok, relaunch));
             ctx.request_repaint();
         });
 
@@ -195,7 +235,11 @@ impl App {
         if let Ok(spec) = std::env::var("FLOCORD_AUTOSTART") {
             unsafe { std::env::remove_var("FLOCORD_AUTOSTART") };
             if let Some((action, channel)) = spec.split_once(':') {
-                self.selected = self.entries.iter().position(|e| e.client.channel.eq_ignore_ascii_case(channel));
+                self.selected = if channel == "all" {
+                    Some(Target::All)
+                } else {
+                    self.entries.iter().position(|e| e.client.channel.eq_ignore_ascii_case(channel)).map(Target::One)
+                };
                 if action == "pick" {
                     self.screen = Screen::PickAction;
                 } else {
@@ -214,7 +258,6 @@ impl App {
         }
 
         let mut outcome: Option<Outcome> = None;
-        let current = self.client().cloned();
         if let Screen::Running(run) = &mut self.screen {
             while let Ok(step) = run.rx.try_recv() {
                 match step {
@@ -227,8 +270,7 @@ impl App {
                     Step::Progress(fraction, label) => run.progress = Some((fraction, label)),
                 }
             }
-            if let Ok((ok, was_running)) = run.done_rx.try_recv() {
-                let relaunch = if was_running && ok { current.clone() } else { None };
+            if let Ok((ok, relaunch)) = run.done_rx.try_recv() {
                 outcome = Some(Outcome { title: run.title.clone(), lines: run.lines.clone(), ok, relaunch });
             }
             ctx.request_repaint_after(Duration::from_millis(80));
@@ -402,10 +444,10 @@ impl App {
         ui.label(RichText::new("Flocord s'installe sur la version la plus récente du client choisi.").size(12.0).color(MUTED));
         ui.add_space(12.0);
 
-        let mut clicked: Option<usize> = None;
+        let mut clicked: Option<Target> = None;
         egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
             for (index, entry) in self.entries.iter().enumerate() {
-                let selected = self.selected == Some(index);
+                let selected = self.selected == Some(Target::One(index));
                 let response = option_card(ui, selected, true, |ui| {
                     ui.horizontal(|ui| {
                         let (dot, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
@@ -422,7 +464,32 @@ impl App {
                     });
                 });
                 if response.clicked() {
-                    clicked = Some(index);
+                    clicked = Some(Target::One(index));
+                }
+                ui.add_space(8.0);
+            }
+
+            // Avec plusieurs Discord installés, on peut tout traiter d'un coup
+            if self.entries.len() > 1 {
+                let selected = self.selected == Some(Target::All);
+                let response = option_card(ui, selected, true, |ui| {
+                    ui.horizontal(|ui| {
+                        let (dot, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 19.0, accent_alpha(if selected { 90 } else { 40 }));
+                        // Quatre pastilles : « tous les clients »
+                        let color = if selected { Color32::WHITE } else { ACCENT_LIGHT };
+                        for offset in [Vec2::new(-4.0, -4.0), Vec2::new(4.0, -4.0), Vec2::new(-4.0, 4.0), Vec2::new(4.0, 4.0)] {
+                            ui.painter().circle_filled(dot.center() + offset, 2.6, color);
+                        }
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Tous les Discord").size(15.0).strong().color(TEXT));
+                            ui.label(RichText::new(self.entries.iter().map(|e| e.client.name.as_str()).collect::<Vec<_>>().join(" · ")).size(11.5).color(MUTED));
+                        });
+                    });
+                });
+                if response.clicked() {
+                    clicked = Some(Target::All);
                 }
                 ui.add_space(8.0);
             }
@@ -430,12 +497,12 @@ impl App {
             if self.entries.is_empty() {
                 egui::Frame::new().fill(glass(90)).corner_radius(CornerRadius::same(14)).inner_margin(Margin::same(20)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Aucun Discord trouvé. Installe Discord (Stable, PTB ou Canary) puis relance cet installeur.").color(MUTED));
+                    ui.label(RichText::new("Aucun Discord trouvé. Installe Discord (Stable, PTB, Canary ou Development) puis relance cet installeur.").color(MUTED));
                 });
             }
         });
-        if let Some(index) = clicked {
-            self.selected = Some(index);
+        if let Some(target) = clicked {
+            self.selected = Some(target);
         }
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -455,26 +522,70 @@ impl App {
     // ----- Étape 2 : choisir l'action -----
     fn pick_action(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         steps_header(ui, 1);
-        let Some(entry) = self.selected.and_then(|i| self.entries.get(i)) else {
+        let Some(target) = self.selected else {
             self.screen = Screen::PickClient;
             return;
         };
-        let client = entry.client.clone();
-        let state_installed = entry.state.is_installed();
-        let needs_repair = matches!(entry.state, State::Lost(_) | State::Relay);
-        let has_flocord = state_installed || needs_repair;
+        let all = target == Target::All;
+        let Some(entry) = (match target {
+            Target::One(index) => self.entries.get(index),
+            Target::All => self.entries.first(),
+        }) else {
+            self.screen = Screen::PickClient;
+            return;
+        };
 
-        ui.label(RichText::new(format!("Que faire sur {} ?", client.name)).size(20.0).strong().color(TEXT));
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("Discord {}", client.version)).size(12.0).color(MUTED));
-            state_pill(ui, &entry.state);
-        });
+        let client = entry.client.clone();
+        // En mode « tous », l'état affiché et les actions proposées couvrent l'ensemble des clients
+        let state_installed = if all { self.entries.iter().all(|e| e.state.is_installed()) } else { entry.state.is_installed() };
+        let needs_repair = if all {
+            self.entries.iter().any(|e| matches!(e.state, State::Lost(_) | State::Relay))
+        } else {
+            matches!(entry.state, State::Lost(_) | State::Relay)
+        };
+        let has_flocord = if all {
+            self.entries.iter().any(|e| e.state.is_installed() || matches!(e.state, State::Lost(_) | State::Relay))
+        } else {
+            state_installed || needs_repair
+        };
+        let missing = self.entries.iter().any(|e| matches!(e.state, State::NotInstalled | State::Unknown));
+
+        if all {
+            ui.label(RichText::new("Que faire sur tous les Discord ?").size(20.0).strong().color(TEXT));
+            ui.label(RichText::new(self.entries.iter().map(|e| format!("{} {}", e.client.name, e.client.version)).collect::<Vec<_>>().join(" · ")).size(12.0).color(MUTED));
+        } else {
+            ui.label(RichText::new(format!("Que faire sur {} ?", client.name)).size(20.0).strong().color(TEXT));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Discord {}", client.version)).size(12.0).color(MUTED));
+                state_pill(ui, &entry.state);
+            });
+        }
         ui.add_space(12.0);
 
+        let install_description = if all {
+            if state_installed { "Flocord est déjà installé partout." } else { "Installe Flocord sur les Discord qui ne l'ont pas encore." }
+        } else if state_installed {
+            "Déjà installé sur ce Discord."
+        } else {
+            "Sauvegarde le Discord original, puis installe la dernière version de Flocord."
+        };
+        let repair_description = if needs_repair {
+            "Recommandé : remet Flocord en place sur la version actuelle de Discord."
+        } else if all {
+            "Réinstalle proprement Flocord partout où il est présent."
+        } else {
+            "Réinstalle proprement Flocord, utile si quelque chose ne va pas."
+        };
+        let uninstall_description = if all {
+            "Retire Flocord de tous les Discord et restaure les originaux."
+        } else {
+            "Retire Flocord et restaure le Discord d'origine à l'identique."
+        };
+
         let options: [(Action, &str, &str, bool, bool); 3] = [
-            (Action::Install, "Installer Flocord", if state_installed { "Déjà installé sur ce Discord." } else { "Sauvegarde le Discord original, puis installe la dernière version de Flocord." }, !state_installed, !has_flocord),
-            (Action::Repair, "Réparer", if needs_repair { "Recommandé : remet Flocord en place sur la version actuelle de Discord." } else { "Réinstalle proprement Flocord, utile si quelque chose ne va pas." }, has_flocord, needs_repair),
-            (Action::Uninstall, "Désinstaller", "Retire Flocord et restaure le Discord d'origine à l'identique.", has_flocord, false),
+            (Action::Install, "Installer Flocord", install_description, if all { missing } else { !state_installed }, !has_flocord),
+            (Action::Repair, "Réparer", repair_description, has_flocord, needs_repair),
+            (Action::Uninstall, "Désinstaller", uninstall_description, has_flocord, false),
         ];
 
         let mut pick: Option<Action> = None;
@@ -504,7 +615,8 @@ impl App {
             self.action = Some(action);
         }
 
-        let running = self.is_running(&client);
+        let targets = self.targets();
+        let running: Vec<String> = targets.iter().filter(|c| self.is_running(c)).map(|c| c.name.clone()).collect();
         ui.ctx().request_repaint_after(Duration::from_secs(2));
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -515,15 +627,20 @@ impl App {
                     self.screen = Screen::PickClient;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let label = if running { "Fermer Discord et lancer" } else { "Lancer" };
+                    let label = if running.is_empty() { "Lancer" } else { "Fermer Discord et lancer" };
                     if pill_button_enabled(ui, label, ACCENT, true, self.action.is_some()).clicked() {
                         self.start(ctx);
                     }
                 });
             });
-            if running {
+            if !running.is_empty() {
                 ui.add_space(6.0);
-                ui.label(RichText::new(format!("{} est ouvert : il sera fermé pendant l'opération, tu pourras le relancer à la fin.", client.name)).size(11.5).color(WARN));
+                let notice = if running.len() == 1 {
+                    format!("{} est ouvert : il sera fermé pendant l'opération, tu pourras le relancer à la fin.", running[0])
+                } else {
+                    format!("{} sont ouverts : ils seront fermés pendant l'opération, tu pourras les relancer à la fin.", running.join(", "))
+                };
+                ui.label(RichText::new(notice).size(11.5).color(WARN));
             }
         });
     }
@@ -563,7 +680,7 @@ impl App {
 
         let relaunch = outcome.relaunch.clone();
         let mut back = false;
-        let mut launched: Option<DiscordClient> = None;
+        let mut launched: Vec<DiscordClient> = Vec::new();
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.add_space(12.0);
@@ -573,20 +690,27 @@ impl App {
                     back = true;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if let Some(client) = &relaunch {
-                        if pill_button(ui, &format!("Relancer {}", client.name), ACCENT, true).clicked() {
-                            launched = Some(client.clone());
+                    if !relaunch.is_empty() {
+                        let label = if relaunch.len() == 1 {
+                            format!("Relancer {}", relaunch[0].name)
+                        } else {
+                            format!("Relancer {} clients Discord", relaunch.len())
+                        };
+                        if pill_button(ui, &label, ACCENT, true).clicked() {
+                            launched = relaunch.clone();
                         }
                     }
                 });
             });
         });
 
-        if let Some(client) = launched {
-            process::launch_discord(&client.path, &client.executable);
-            self.toast(format!("{} relancé", client.name));
+        if !launched.is_empty() {
+            for client in &launched {
+                process::launch_discord(&client.path, &client.executable);
+            }
+            self.toast(if launched.len() == 1 { format!("{} relancé", launched[0].name) } else { format!("{} clients Discord relancés", launched.len()) });
             if let Screen::Done(outcome) = &mut self.screen {
-                outcome.relaunch = None;
+                outcome.relaunch.clear();
             }
         }
         if back {
@@ -837,6 +961,7 @@ fn channel_initial(channel: &str) -> &'static str {
     match channel {
         "PTB" => "P",
         "Canary" => "C",
+        "Development" => "D",
         _ => "S",
     }
 }
