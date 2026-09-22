@@ -38,18 +38,18 @@ pub fn available() -> Option<String> {
 /// Télécharge la nouvelle version, remplace l'exécutable courant et le relance.
 pub fn run(version: &str) -> bool {
     let Ok(exe) = std::env::current_exe() else {
-        println!("❌ Chemin de l'installeur introuvable.");
+        say!("❌ Chemin de l'installeur introuvable.");
         return false;
     };
 
-    println!();
+    say!("");
     let Some(bytes) = updater::download(&release_url(version), "Installeur") else {
-        println!("❌ Téléchargement impossible.");
+        say!("❌ Téléchargement impossible.");
         return false;
     };
 
     if bytes.len() < 1_000_000 || !bytes.starts_with(b"MZ") {
-        println!("❌ Fichier téléchargé invalide.");
+        say!("❌ Fichier téléchargé invalide.");
         return false;
     }
 
@@ -57,18 +57,18 @@ pub fn run(version: &str) -> bool {
     let old = old_exe(&exe);
     let _ = fs::remove_file(&old);
     if let Err(error) = fs::rename(&exe, &old) {
-        println!("❌ Impossible de remplacer l'installeur : {}", error);
+        say!("❌ Impossible de remplacer l'installeur : {}", error);
         return false;
     }
 
     if let Err(error) = fs::write(&exe, &bytes) {
-        println!("❌ Écriture impossible : {}", error);
+        say!("❌ Écriture impossible : {}", error);
         let _ = fs::rename(&old, &exe);
         return false;
     }
 
     logger::write(&format!("Installeur mis à jour vers v{}", version));
-    println!("✔ Installeur v{} installé, relance...", version);
+    say!("✔ Installeur v{} installé, relance...", version);
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let _ = Command::new(&exe).args(args).spawn();

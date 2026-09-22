@@ -11,19 +11,19 @@ pub fn create_backup(resources: &Path, original: &Path) -> bool {
     let backup = backup_file(resources);
 
     if backup.exists() {
-        println!("✔ Backup déjà présent.");
+        say!("✔ Backup déjà présent.");
         return true;
     }
 
     if let Some(folder) = backup.parent() {
         if let Err(error) = fs::create_dir_all(folder) {
-            println!("❌ Impossible de créer le dossier backup : {}", error);
+            say!("❌ Impossible de créer le dossier backup : {}", error);
             return false;
         }
     }
 
     if fs::copy(original, &backup).is_ok() {
-        println!("✔ Discord original sauvegardé.");
+        say!("✔ Discord original sauvegardé.");
         return true;
     }
 
@@ -40,9 +40,9 @@ pub fn create_backup(resources: &Path, original: &Path) -> bool {
         .unwrap_or(false);
 
     if ok {
-        println!("✔ Discord original sauvegardé.");
+        say!("✔ Discord original sauvegardé.");
     } else {
-        println!("❌ Impossible de sauvegarder {}", original.display());
+        say!("❌ Impossible de sauvegarder {}", original.display());
     }
     ok
 }

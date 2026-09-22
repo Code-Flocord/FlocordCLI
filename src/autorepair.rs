@@ -50,7 +50,7 @@ fn refresh_exe() -> Result<(), String> {
 
 pub fn enable() -> bool {
     if let Err(error) = refresh_exe() {
-        println!("❌ Impossible de copier l'installeur : {}", error);
+        say!("❌ Impossible de copier l'installeur : {}", error);
         return false;
     }
 
@@ -62,11 +62,11 @@ pub fn enable() -> bool {
     match fs::write(launcher(), script) {
         Ok(_) => {
             logger::write("Protection automatique activée");
-            println!("✔ Protection automatique activée : Flocord sera réparé à chaque démarrage de Windows si besoin.");
+            say!("✔ Protection automatique activée : Flocord sera réparé à chaque démarrage de Windows si besoin.");
             true
         }
         Err(error) => {
-            println!("❌ Impossible de créer le lanceur : {}", error);
+            say!("❌ Impossible de créer le lanceur : {}", error);
             false
         }
     }
@@ -76,15 +76,15 @@ pub fn disable() -> bool {
     match fs::remove_file(launcher()) {
         Ok(_) => {
             logger::write("Protection automatique désactivée");
-            println!("✔ Protection automatique désactivée.");
+            say!("✔ Protection automatique désactivée.");
             true
         }
         Err(_) if !is_enabled() => {
-            println!("✔ La protection automatique n'était pas activée.");
+            say!("✔ La protection automatique n'était pas activée.");
             true
         }
         Err(error) => {
-            println!("❌ Impossible de retirer le lanceur : {}", error);
+            say!("❌ Impossible de retirer le lanceur : {}", error);
             false
         }
     }
@@ -111,7 +111,7 @@ pub fn run_silent() {
             continue;
         }
 
-        logger::write(&format!("{} : {} → réparation", entry.client.name, strip_ansi(&entry.state.label())));
+        logger::write(&format!("{} : {} → réparation", entry.client.name, crate::say::strip_ansi(&entry.state.label())));
 
         let was_running = process::is_process_running(&entry.client.path);
         if was_running {
@@ -126,21 +126,4 @@ pub fn run_silent() {
             logger::write(&format!("{} relancé", entry.client.name));
         }
     }
-}
-
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            for n in chars.by_ref() {
-                if n == 'm' {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }

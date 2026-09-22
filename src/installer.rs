@@ -57,24 +57,24 @@ fn write_asar(target: &Path, resources: &Path, data: &[u8]) -> Result<(), String
 /// Installe (ou réinstalle avec `force`) Flocord sur le dossier Discord le plus récent.
 /// Gère tous les états : Discord vierge, Flocord déjà présent, dossier relais app/ laissé par une mise à jour.
 pub fn install(client: &DiscordClient, force: bool) -> bool {
-    println!();
-    println!("Client  : {} ({})", client.name, client.channel);
+    say!("");
+    say!("Client  : {} ({})", client.name, client.channel);
 
     if !client.executable.exists() {
-        println!("❌ Exécutable Discord introuvable : {}", client.executable.display());
+        say!("❌ Exécutable Discord introuvable : {}", client.executable.display());
         return false;
     }
 
     let Some(info) = detect::detect(client) else {
-        println!("❌ Aucun dossier Discord exploitable.");
+        say!("❌ Aucun dossier Discord exploitable.");
         return false;
     };
 
-    println!("Discord : {}", info.version);
+    say!("Discord : {}", info.version);
 
     if info.installed && !force {
-        println!();
-        println!("✔ Flocord v{} est déjà installé.", info.flocord_version.unwrap_or_default());
+        say!("");
+        say!("✔ Flocord v{} est déjà installé.", info.flocord_version.unwrap_or_default());
         registry::mark(&client.channel);
         return true;
     }
@@ -83,11 +83,11 @@ pub fn install(client: &DiscordClient, force: bool) -> bool {
     let app = &info.app_asar;
     let original = &info.original_asar;
 
-    println!();
-    println!("Préparation du Discord original...");
+    say!("");
+    say!("Préparation du Discord original...");
 
     if original.exists() {
-        println!("✔ _app.asar présent.");
+        say!("✔ _app.asar présent.");
         if !backup::create_backup(resources, original) {
             return false;
         }
@@ -96,43 +96,43 @@ pub fn install(client: &DiscordClient, force: bool) -> bool {
             return false;
         }
         if let Err(error) = fs::rename(app, original) {
-            println!("❌ Impossible de renommer app.asar en _app.asar : {}", error);
+            say!("❌ Impossible de renommer app.asar en _app.asar : {}", error);
             return false;
         }
-        println!("✔ _app.asar créé.");
+        say!("✔ _app.asar créé.");
     } else {
         // app.asar est un dossier sans original à côté : on repart du backup
         let saved = backup::backup_file(resources);
         if !saved.exists() {
-            println!("❌ Discord original introuvable (ni _app.asar, ni backup). Réinstallez Discord.");
+            say!("❌ Discord original introuvable (ni _app.asar, ni backup). Réinstallez Discord.");
             return false;
         }
         if let Err(error) = fs::copy(&saved, original) {
-            println!("❌ Restauration du backup impossible : {}", error);
+            say!("❌ Restauration du backup impossible : {}", error);
             return false;
         }
-        println!("✔ _app.asar restauré depuis le backup.");
+        say!("✔ _app.asar restauré depuis le backup.");
     }
 
     if app.exists() {
         if let Err(error) = remove_any(app) {
-            println!("❌ {}", error);
+            say!("❌ {}", error);
             return false;
         }
     }
 
-    println!();
-    println!("Installation de Flocord...");
+    say!("");
+    say!("Installation de Flocord...");
 
     let payload = updater::check_and_update(DESKTOP_ASAR);
 
     if let Err(error) = write_asar(app, resources, &payload.bytes) {
-        println!("❌ {}", error);
+        say!("❌ {}", error);
         return false;
     }
 
     if let Err(error) = fs::write(resources.join("flocord.lock"), &payload.version) {
-        println!("⚠ Impossible d'écrire le marqueur : {}", error);
+        say!("⚠ Impossible d'écrire le marqueur : {}", error);
     }
 
     for leftover in ["flocord_extract", "app_flocord.asar", "app.original.asar", "flocord_temp.asar"] {
@@ -142,7 +142,7 @@ pub fn install(client: &DiscordClient, force: bool) -> bool {
     registry::mark(&client.channel);
     logger::write(&format!("Flocord v{} installé sur {} {}", payload.version, client.name, info.version));
 
-    println!();
-    println!("\x1b[32m✔ Flocord v{} installé sur {}.\x1b[0m", payload.version, client.name);
+    say!("");
+    say!("\x1b[32m✔ Flocord v{} installé sur {}.\x1b[0m", payload.version, client.name);
     true
 }

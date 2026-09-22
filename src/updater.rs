@@ -1,7 +1,9 @@
 // Récupère la dernière version de Flocord (version.json sur GitHub) et télécharge l'asar si l'embarqué est dépassé.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::Read;
+
+use crate::say;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -75,22 +77,15 @@ pub fn download(url: &str, label: &str) -> Option<Vec<u8>> {
             let percent = (bytes.len() as u64 * 100 / total) as usize;
             if percent != last_percent {
                 last_percent = percent;
-                let filled = percent / 4;
-                print!(
-                    "\r  {} [{}{}] {:>3}%  {:.1} / {:.1} Mo",
-                    label,
-                    "█".repeat(filled),
-                    "░".repeat(25 - filled),
-                    percent,
-                    bytes.len() as f64 / 1_048_576.0,
-                    total as f64 / 1_048_576.0
+                say::progress(
+                    percent as f32 / 100.0,
+                    format!("{}  {:.1} / {:.1} Mo", label, bytes.len() as f64 / 1_048_576.0, total as f64 / 1_048_576.0)
                 );
-                let _ = io::stdout().flush();
             }
         }
     }
 
-    println!();
+    say::progress_done();
     Some(bytes)
 }
 
@@ -99,33 +94,31 @@ pub fn check_and_update(embedded: &[u8]) -> Payload {
     let embedded_version = embedded_version();
     let fallback = || Payload { bytes: embedded.to_vec(), version: embedded_version.clone() };
 
-    print!("  Vérification des mises à jour Flocord...");
-    let _ = io::stdout().flush();
+    say!("Vérification des mises à jour Flocord...");
 
     let Some(manifest) = latest_manifest() else {
-        println!(" hors ligne, version embarquée (v{}) utilisée.", embedded_version);
+        say!("Hors ligne : version embarquée (v{}) utilisée.", embedded_version);
         return fallback();
     };
 
     if !version_gt(&manifest.version, &embedded_version) {
-        println!(" à jour (v{}).", embedded_version);
+        say!("Flocord v{} à jour.", embedded_version);
         return fallback();
     }
 
-    println!();
-    println!("  Mise à jour disponible : v{} → v{}", embedded_version, manifest.version);
+    say!("Mise à jour disponible : v{} → v{}", embedded_version, manifest.version);
 
     let cache = cache_path();
     let cache_version = cache.with_extension("version");
     if fs::read_to_string(&cache_version).map(|v| v.trim() == manifest.version).unwrap_or(false) {
         if let Ok(bytes) = fs::read(&cache) {
-            println!("  ✔ v{} déjà téléchargée.", manifest.version);
+            say!("✔ v{} déjà téléchargée.", manifest.version);
             return Payload { bytes, version: manifest.version };
         }
     }
 
     let Some(bytes) = download(&manifest.url, "Téléchargement") else {
-        println!("  ⚠ Téléchargement impossible, version embarquée utilisée.");
+        say!("⚠ Téléchargement impossible, version embarquée utilisée.");
         return fallback();
     };
 
@@ -133,6 +126,6 @@ pub fn check_and_update(embedded: &[u8]) -> Payload {
     let _ = fs::write(&cache, &bytes);
     let _ = fs::write(&cache_version, &manifest.version);
 
-    println!("  ✔ Flocord v{} prêt.", manifest.version);
+    say!("✔ Flocord v{} prêt.", manifest.version);
     Payload { bytes, version: manifest.version }
 }
