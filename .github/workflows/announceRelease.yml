@@ -22,6 +22,8 @@ jobs:
                       body = body[:3480] + "\n… (suite sur GitHub)"
                   payload = {
                       "username": "Flocord Releases",
+                      "content": "<@&1551815823558180874>",
+                      "allowed_mentions": {"roles": ["1551815823558180874"]},
                       "embeds": [{
                           "title": os.environ["NAME"] or os.environ["TAG"],
                           "url": os.environ["URL"],
