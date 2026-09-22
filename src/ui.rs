@@ -58,7 +58,7 @@ pub fn banner(version: &str) {
 ▀      ▀▀▀▀  ▀▀▀   ▀▀▀▀  ▀▀▀  ▀   ▀ ▀▀▀▀"#
     );
     println!("{}", RESET);
-    println!("  Flocord Installer v{}   {}github.com/Code-Flocord{}", version, DIM, RESET);
+    println!("  Flocord Installer v{}   {}Flocord v{} · github.com/Code-Flocord{}", version, DIM, crate::updater::embedded_version(), RESET);
     println!("{}", rule());
 }
 

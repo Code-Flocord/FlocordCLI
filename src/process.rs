@@ -1,5 +1,21 @@
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Commande console lancée sans fenêtre : l'installeur est une application fenêtrée,
+/// sans ce drapeau chaque tasklist / taskkill / powershell ferait apparaître une console.
+pub fn hidden(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
+/// Ouvre une URL ou un fichier avec l'application par défaut, sans console
+pub fn open(target: &str) {
+    let _ = hidden("cmd").args(["/C", "start", "", target]).spawn();
+}
 
 fn get_process_name(path: &PathBuf) -> String {
     let path_string = path.to_string_lossy().to_lowercase();
@@ -22,7 +38,7 @@ fn get_process_name(path: &PathBuf) -> String {
 pub fn is_process_running(discord_path: &PathBuf) -> bool {
     let process_name = get_process_name(discord_path);
 
-    let output = Command::new("tasklist")
+    let output = hidden("tasklist")
         .args(["/FI", &format!("IMAGENAME eq {}", process_name)])
         .output();
 
@@ -56,7 +72,7 @@ pub fn close_discord(discord_path: &PathBuf) -> bool {
 
     println!("Fermeture du processus : {}", process_name);
 
-    let result = Command::new("taskkill")
+    let result = hidden("taskkill")
         .args(["/IM", &process_name, "/F"])
         .output();
 

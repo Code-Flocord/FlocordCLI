@@ -84,6 +84,8 @@ pub struct App {
     newer: Option<Option<String>>,
     update_rx: Receiver<Option<String>>,
     toast: Option<(String, Instant)>,
+    /// Discord ouvert ? (client, résultat, date) — rafraîchi toutes les 2 s, jamais à chaque image
+    running_cache: Option<(String, bool, Instant)>,
 }
 
 impl App {
@@ -117,6 +119,7 @@ impl App {
             newer: None,
             update_rx,
             toast: None,
+            running_cache: None,
         }
     }
 
@@ -130,6 +133,18 @@ impl App {
 
     fn toast(&mut self, text: impl Into<String>) {
         self.toast = Some((text.into(), Instant::now()));
+    }
+
+    /// Vérifie si le Discord choisi tourne, au plus une fois toutes les 2 secondes (tasklist est coûteux)
+    fn is_running(&mut self, client: &DiscordClient) -> bool {
+        if let Some((name, running, at)) = &self.running_cache {
+            if name == &client.name && at.elapsed() < Duration::from_secs(2) {
+                return *running;
+            }
+        }
+        let running = process::is_process_running(&client.path);
+        self.running_cache = Some((client.name.clone(), running, Instant::now()));
+        running
     }
 
     fn client(&self) -> Option<&DiscordClient> {
@@ -299,7 +314,7 @@ impl App {
         let painter = ui.painter();
         paint_logo(painter, rect.left_center() + Vec2::new(30.0, 0.0), 11.0);
         painter.text(rect.left_center() + Vec2::new(48.0, 0.0), Align2::LEFT_CENTER, "Flocord Installer", FontId::proportional(14.0), TEXT);
-        painter.text(rect.left_center() + Vec2::new(174.0, 1.0), Align2::LEFT_CENTER, format!("v{}", updater::embedded_version()), FontId::monospace(11.0), MUTED);
+        painter.text(rect.left_center() + Vec2::new(174.0, 1.0), Align2::LEFT_CENTER, format!("v{}  ·  Flocord v{}", updater::cli_version(), updater::embedded_version()), FontId::monospace(11.0), MUTED);
 
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)));
         child.add_space(10.0);
@@ -489,7 +504,8 @@ impl App {
             self.action = Some(action);
         }
 
-        let running = process::is_process_running(&client.path);
+        let running = self.is_running(&client);
+        ui.ctx().request_repaint_after(Duration::from_secs(2));
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.add_space(12.0);
@@ -826,7 +842,7 @@ fn channel_initial(channel: &str) -> &'static str {
 }
 
 fn open(target: &str) {
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", target]).spawn();
+    process::open(target);
 }
 
 fn icon() -> egui::IconData {

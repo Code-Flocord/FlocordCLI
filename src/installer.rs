@@ -7,7 +7,6 @@ use crate::updater;
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 static DESKTOP_ASAR: &[u8] = include_bytes!("../assets/desktop.asar");
 
@@ -18,7 +17,7 @@ fn remove_any(path: &Path) -> Result<(), String> {
     }
 
     let command = format!("Remove-Item -LiteralPath '{}' -Recurse -Force", path.to_string_lossy());
-    let ok = Command::new("powershell")
+    let ok = crate::process::hidden("powershell")
         .args(["-NoProfile", "-Command", &command])
         .output()
         .map(|o| o.status.success())
@@ -40,7 +39,7 @@ fn write_asar(target: &Path, resources: &Path, data: &[u8]) -> Result<(), String
         temp.to_string_lossy(),
         target.to_string_lossy()
     );
-    let ok = Command::new("powershell")
+    let ok = crate::process::hidden("powershell")
         .args(["-NoProfile", "-Command", &command])
         .output()
         .map(|o| o.status.success())

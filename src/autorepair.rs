@@ -37,14 +37,14 @@ fn refresh_exe() -> Result<(), String> {
 
     let version_file = target.with_extension("version");
     let up_to_date = target.exists()
-        && fs::read_to_string(&version_file).map(|v| v.trim() == updater::embedded_version()).unwrap_or(false);
+        && fs::read_to_string(&version_file).map(|v| v.trim() == updater::cli_version()).unwrap_or(false);
     if up_to_date {
         return Ok(());
     }
 
     fs::create_dir_all(registry::data_dir()).map_err(|e| e.to_string())?;
     fs::copy(&current, &target).map_err(|e| e.to_string())?;
-    fs::write(&version_file, updater::embedded_version()).map_err(|e| e.to_string())?;
+    fs::write(&version_file, updater::cli_version()).map_err(|e| e.to_string())?;
     Ok(())
 }
 

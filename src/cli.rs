@@ -1,6 +1,5 @@
 // Mode console : menu interactif (--cli) et actions en ligne de commande.
 
-use std::process::Command;
 use std::sync::mpsc;
 
 use crate::args::{self, Action};
@@ -134,7 +133,7 @@ pub fn interactive() {
         let newer = update_check.clone().flatten();
 
         ui::clear_screen();
-        ui::banner(&updater::embedded_version());
+        ui::banner(updater::cli_version());
         overview();
 
         println!();
@@ -255,5 +254,5 @@ fn toggle_protection() {
 }
 
 fn open(target: &str) {
-    let _ = Command::new("cmd").args(["/C", "start", "", target]).spawn();
+    process::open(target);
 }

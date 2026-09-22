@@ -16,8 +16,17 @@ static EMBEDDED_MANIFEST: &str = include_str!("../version.json");
 
 #[derive(Deserialize, Clone)]
 pub struct VersionManifest {
+    /// Version de Flocord (l'asar)
     pub version: String,
     pub url: String,
+    /// Version de l'installeur, quand elle diffère de celle de Flocord
+    #[serde(default)]
+    pub cli: Option<String>,
+}
+
+/// Version de l'installeur lui-même (Cargo.toml)
+pub fn cli_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 pub struct Payload {

@@ -28,8 +28,9 @@ pub fn cleanup() {
 /// Version plus récente de l'installeur disponible en ligne, s'il y en a une
 pub fn available() -> Option<String> {
     let manifest = updater::latest_manifest()?;
-    if updater::version_gt(&manifest.version, &updater::embedded_version()) {
-        Some(manifest.version)
+    let latest = manifest.cli.unwrap_or(manifest.version);
+    if updater::version_gt(&latest, updater::cli_version()) {
+        Some(latest)
     } else {
         None
     }

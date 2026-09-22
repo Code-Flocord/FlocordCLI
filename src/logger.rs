@@ -26,7 +26,7 @@ pub fn init() {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    write(&format!("Flocord Installer v{} démarré {}", crate::updater::embedded_version(), args.join(" ")));
+    write(&format!("Flocord Installer v{} (Flocord v{}) démarré {}", crate::updater::cli_version(), crate::updater::embedded_version(), args.join(" ")));
 }
 
 pub fn write(message: &str) {

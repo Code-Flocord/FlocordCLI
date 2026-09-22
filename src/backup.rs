@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub fn backup_file(resources: &Path) -> PathBuf {
     resources.join("FlocordBackup").join("app.asar")
@@ -33,7 +32,7 @@ pub fn create_backup(resources: &Path, original: &Path) -> bool {
         original.to_string_lossy(),
         backup.to_string_lossy()
     );
-    let ok = Command::new("powershell")
+    let ok = crate::process::hidden("powershell")
         .args(["-NoProfile", "-Command", &command])
         .output()
         .map(|o| o.status.success())
