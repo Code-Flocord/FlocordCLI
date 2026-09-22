@@ -1,5 +1,5 @@
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -10,6 +10,12 @@ pub fn hidden(program: &str) -> Command {
     let mut command = Command::new(program);
     command.creation_flags(CREATE_NO_WINDOW);
     command
+}
+
+/// Chemin entre apostrophes pour une commande PowerShell. Une apostrophe dans le chemin
+/// (C:\Users\O'Neil) se double, sinon elle fermerait la chaîne.
+pub fn ps_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
 }
 
 /// Ouvre une URL ou un fichier avec l'application par défaut, sans console
@@ -77,5 +83,17 @@ pub fn close_discord(discord_path: &PathBuf) -> bool {
         Ok(output) => output.status.success(),
 
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ps_quote;
+    use std::path::Path;
+
+    #[test]
+    fn quotes_paths_for_powershell() {
+        assert_eq!(ps_quote(Path::new(r"C:\Users\Sk\app.asar")), r"'C:\Users\Sk\app.asar'");
+        assert_eq!(ps_quote(Path::new(r"C:\Users\O'Neil\app.asar")), r"'C:\Users\O''Neil\app.asar'");
     }
 }

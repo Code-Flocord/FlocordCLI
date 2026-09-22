@@ -43,14 +43,21 @@ pub fn run(version: &str) -> bool {
         return false;
     };
 
+    // L'empreinte attendue vient du manifest signé : un exe remplacé sur GitHub est refusé
+    let Some(expected) = updater::latest_manifest().filter(|m| m.cli.as_deref() == Some(version)).map(|m| m.cli_sha256) else {
+        say!("❌ Version v{} introuvable dans le manifest signé.", version);
+        return false;
+    };
+
     say!("");
     let Some(bytes) = updater::download(&release_url(version), "Installeur") else {
         say!("❌ Téléchargement impossible.");
         return false;
     };
 
-    if bytes.len() < 1_000_000 || !bytes.starts_with(b"MZ") {
-        say!("❌ Fichier téléchargé invalide.");
+    if updater::sha256(&bytes) != expected {
+        logger::write(&format!("Installeur v{} rejeté : empreinte différente de la version signée", version));
+        say!("❌ Fichier téléchargé différent de la version signée.");
         return false;
     }
 

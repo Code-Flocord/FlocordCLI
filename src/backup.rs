@@ -28,9 +28,9 @@ pub fn create_backup(resources: &Path, original: &Path) -> bool {
 
     // Certains antivirus bloquent la copie directe : PowerShell passe généralement
     let command = format!(
-        "Copy-Item -LiteralPath '{}' -Destination '{}' -Force",
-        original.to_string_lossy(),
-        backup.to_string_lossy()
+        "Copy-Item -LiteralPath {} -Destination {} -Force",
+        crate::process::ps_quote(original),
+        crate::process::ps_quote(&backup)
     );
     let ok = crate::process::hidden("powershell")
         .args(["-NoProfile", "-Command", &command])

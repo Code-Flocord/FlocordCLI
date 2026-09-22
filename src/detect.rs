@@ -83,3 +83,16 @@ pub fn previous_install(client: &DiscordClient) -> Option<String> {
         .find(|folder| folder.join("resources").join("flocord.lock").exists())
         .map(|folder| folder.file_name().unwrap_or_default().to_string_lossy().replace("app-", ""))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_version;
+
+    #[test]
+    fn parses_discord_folders_and_versions() {
+        assert_eq!(parse_version("app-1.0.9259"), (1, 0, 9259));
+        assert_eq!(parse_version("2.8.3"), (2, 8, 3));
+        assert_eq!(parse_version("2.8"), (2, 8, 0));
+        assert_eq!(parse_version("garbage"), (0, 0, 0));
+    }
+}

@@ -1,0 +1,8 @@
+{
+    "version": "2.9.0",
+    "cli": "2.9.0",
+    "url": "https://github.com/Code-Flocord/Flocord/releases/download/v2.9.0/desktop.asar",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cli_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "signature": "930e534b737317770caa1ae1608cf4fe32130b6d972f7a56ad74ac24b0f5c40c6de1419fc75bd427456a13b7f744800c6b6c48a6b0004ce5fda33810fbd3160f"
+}

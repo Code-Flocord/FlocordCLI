@@ -1,0 +1,44 @@
+name: Release
+# Construit FlocordCLI.exe pour un tag vX.Y.Z et le dépose en brouillon. Le brouillon n'est publié
+# (et annoncé) qu'après signature de version.json par release.ps1, hors de GitHub.
+on:
+    push:
+        tags:
+            - "v*"
+
+permissions:
+    contents: write
+
+jobs:
+    Build:
+        name: Build FlocordCLI
+        runs-on: windows-latest
+        env:
+            GH_TOKEN: ${{ github.token }}
+            TAG: ${{ github.ref_name }}
+
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+            - name: Check the tag matches Cargo.toml
+              shell: pwsh
+              run: |
+                  $version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version = "(.+)"').Groups[1].Value
+                  if ("v$version" -ne $env:TAG) { throw "Tag $env:TAG, Cargo.toml $version" }
+
+            - name: Download the Flocord build to embed
+              shell: pwsh
+              run: |
+                  $flocord = (Get-Content flocord.version -Raw).Trim()
+                  gh release download "v$flocord" -R Code-Flocord/Flocord -p desktop.asar -D assets
+                  if ($LASTEXITCODE) { throw "desktop.asar v$flocord introuvable" }
+
+            - name: Test
+              run: cargo test --release
+
+            - name: Build
+              run: cargo build --release
+
+            - name: Create the draft release
+              shell: pwsh
+              run: gh release create $env:TAG target/release/FlocordCLI.exe --draft --title "Flocord CLI $env:TAG" --generate-notes

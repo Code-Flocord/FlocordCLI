@@ -1,0 +1,22 @@
+name: Test
+on:
+    push:
+        branches:
+            - master
+    pull_request:
+
+jobs:
+    Test:
+        name: Test
+        runs-on: windows-latest
+
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+            # Le vrai desktop.asar n'est nécessaire que pour une release
+            - name: Placeholder desktop.asar
+              shell: pwsh
+              run: New-Item -ItemType File assets/desktop.asar -Force | Out-Null
+
+            - name: Test
+              run: cargo test

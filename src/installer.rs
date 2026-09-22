@@ -16,7 +16,7 @@ fn remove_any(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let command = format!("Remove-Item -LiteralPath '{}' -Recurse -Force", path.to_string_lossy());
+    let command = format!("Remove-Item -LiteralPath {} -Recurse -Force", crate::process::ps_quote(path));
     let ok = crate::process::hidden("powershell")
         .args(["-NoProfile", "-Command", &command])
         .output()
@@ -35,9 +35,9 @@ fn write_asar(target: &Path, resources: &Path, data: &[u8]) -> Result<(), String
     fs::write(&temp, data).map_err(|e| format!("écriture impossible : {}", e))?;
 
     let command = format!(
-        "Move-Item -LiteralPath '{}' -Destination '{}' -Force",
-        temp.to_string_lossy(),
-        target.to_string_lossy()
+        "Move-Item -LiteralPath {} -Destination {} -Force",
+        crate::process::ps_quote(&temp),
+        crate::process::ps_quote(target)
     );
     let ok = crate::process::hidden("powershell")
         .args(["-NoProfile", "-Command", &command])
