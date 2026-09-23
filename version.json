@@ -1,13 +1,13 @@
 {
-    "version":  "2.9.1",
-    "cli":  "2.9.1",
-    "url":  "https://github.com/Code-Flocord/Flocord/releases/download/v2.9.1/desktop.asar",
-    "sha256":  "45747bc318d1c2b0f48e814879265b25feb681d8882913694be2466b6dacfdf7",
-    "cli_sha256":  "ae2946c725845d2ee11fa91b1c9e2aa651f9cd86c2a6f01c8ba602f3eb4d31bb",
-    "date":  1790166475,
+    "version":  "2.9.2",
+    "cli":  "2.9.2",
+    "url":  "https://github.com/Code-Flocord/Flocord/releases/download/v2.9.2/desktop.asar",
+    "sha256":  "04cd2f59bb5298b00085e0f0e09fa33166c70ef56f9bec0a9707a40e66cae7dd",
+    "cli_sha256":  "8c7c7d42b38691162564d5897c5ecd29b1fe907a62e8c30d608fd7f84a75fa6d",
+    "date":  1790173983,
     "key":  "1c8084d8287cd44c93613297086e1d2a0ad6421b070de9abb4bb09c5d013c856",
     "key_epoch":  1,
     "key_sig":  "4842a377fe418997524965a435959ba5709e7f93c35bcbd8a88abf30f460a00bf1f26368236ac05f6de9434c20516e02248b60b4f54dd53c76ad733d28b31c02",
-    "signature":  "fce6995ab0cd807a2c6e46a10257214519e593915a7469f27f39abe3f2ca7644a020a4df1e0daaea98a9cac2820e75679fbf9eda21c9d714936d65f2c42a4a09",
-    "signature2":  "33312300ce7a775ef9c0cacc4d1de4965457b01f7c48d24ffc583bb012d949657afd6daf1f49fab2d6191c877465755d7dcd4bab6c3d785276481330da1e6e06"
+    "signature":  "c3b10806f96403fbd774483174708c0a8eba75ac57338885aa90baec6239f3a6980ddae4bdf8ff0341697c2067dfee0c526137f4caabc9fb6f7f5baf802f0208",
+    "signature2":  "f175ae77360411b5013446e764757f5b259d9429a5d3b93bb15ce2ddf18bf01db8797d6060afbbdfc3fd11da5cf2cd4e2df03ed406e13dd969e4f000da877507"
 }
