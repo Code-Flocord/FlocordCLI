@@ -1,6 +1,17 @@
 // Récupère la dernière version de Flocord (version.json sur GitHub) et télécharge l'asar si l'embarqué est dépassé.
 // version.json est signé : sans la clé privée de Flocord (gardée hors de GitHub), personne ne peut faire accepter
 // un autre fichier à l'installeur, même avec un accès au dépôt ou aux releases.
+//
+// Confiance en deux étages : le client n'embarque que la clé RACINE (ROOT_KEY), gardée hors ligne. Le manifeste
+// transporte la sous-clé de release courante et son epoch, certifiés par une délégation signée par la racine
+// (flocord-key-v1). La sous-clé signe le manifeste. Si la sous-clé est perdue ou compromise, la racine délègue à
+// une nouvelle sous-clé avec un epoch supérieur : les clients avancent un plancher d'epoch et refusent l'ancienne
+// (révocation), sans que l'auto-update meure.
+//
+// La signature seule n'empêche pas de rejouer un ANCIEN manifeste valablement signé (dépôt compromis) pour geler
+// un client ou le renvoyer vers une version passée. Deux garde-fous s'y ajoutent : le manifeste porte une date
+// signée et il est refusé au-delà de MAX_AGE (fraîcheur), et le client mémorise la plus haute version déjà vue et
+// refuse toute version inférieure (plancher anti-retour, fichier min-version).
 
 use std::fs;
 use std::io::Read;
@@ -16,14 +27,18 @@ use sha2::{Digest, Sha256};
 const VERSION_URL: &str =
     "https://raw.githubusercontent.com/Code-Flocord/FlocordCLI/master/version.json";
 
-/// Clé publique de publication Flocord (ed25519)
-const SIGNING_KEY: [u8; 32] = [
-    0x1c, 0x80, 0x84, 0xd8, 0x28, 0x7c, 0xd4, 0x4c, 0x93, 0x61, 0x32, 0x97, 0x08, 0x6e, 0x1d, 0x2a,
-    0x0a, 0xd6, 0x42, 0x1b, 0x07, 0x0d, 0xe9, 0xab, 0xb4, 0xbb, 0x09, 0xc5, 0xd0, 0x13, 0xc8, 0x56,
+/// Clé publique RACINE Flocord (ed25519), ancre de confiance des clients. Sa clé privée reste hors ligne
+/// et ne sert qu'à signer les délégations de sous-clés.
+const ROOT_KEY: [u8; 32] = [
+    0x12, 0xd1, 0x64, 0xd1, 0xec, 0x1c, 0x55, 0x48, 0xfd, 0x3a, 0xb2, 0xfe, 0xfd, 0x8e, 0x5f, 0xf2,
+    0x13, 0x89, 0x4d, 0x83, 0x91, 0xed, 0xfe, 0x51, 0x20, 0x9a, 0xd0, 0x10, 0x11, 0x1c, 0xd9, 0xab,
 ];
 
 /// Version de l'asar embarqué (assets/desktop.asar)
 static EMBEDDED_VERSION: &str = include_str!("../flocord.version");
+
+/// Un manifeste plus vieux que ça est refusé, même correctement signé (protection anti-rejeu).
+const MAX_AGE_SECS: i64 = 180 * 86_400;
 
 #[derive(Deserialize, Clone)]
 pub struct VersionManifest {
@@ -37,23 +52,120 @@ pub struct VersionManifest {
     pub sha256: String,
     #[serde(default)]
     pub cli_sha256: String,
+    /// Date de signature (secondes Unix). Absente sur les anciens manifestes v1, alors refusés.
     #[serde(default)]
-    pub signature: String,
+    pub date: Option<i64>,
+    /// Sous-clé de release courante (hex), certifiée par la racine.
+    #[serde(default)]
+    pub key: String,
+    /// Génération de la sous-clé : augmente à chaque rotation, sert de plancher anti-révocation.
+    #[serde(default)]
+    pub key_epoch: Option<u64>,
+    /// Signature de la racine sur la délégation (flocord-key-v1).
+    #[serde(default)]
+    pub key_sig: String,
+    // Le champ v1 `signature` du JSON n'est plus lu ici (il ne sert qu'aux anciens clients) : serde l'ignore.
+    #[serde(default)]
+    pub signature2: String,
 }
 
 impl VersionManifest {
-    fn verify(&self, key: &[u8; 32]) -> bool {
-        let message = format!(
-            "flocord-manifest-v1\n{}\n{}\n{}\n{}\n{}",
-            self.version, self.url, self.sha256, self.cli.as_deref().unwrap_or_default(), self.cli_sha256
-        );
-        let Some(signature) = hex(&self.signature).and_then(|bytes| <[u8; 64]>::try_from(bytes).ok()) else {
+    /// Message signé v2, ou None si le manifeste n'a pas de date (v1 pur : refusé par un client v2).
+    fn message(&self) -> Option<String> {
+        let date = self.date?;
+        Some(format!(
+            "flocord-manifest-v2\n{}\n{}\n{}\n{}\n{}\n{}",
+            self.version, self.url, self.sha256, self.cli.as_deref().unwrap_or_default(), self.cli_sha256, date
+        ))
+    }
+
+    /// Vrai si la racine délègue bien à la sous-clé annoncée ET que celle-ci signe le manifeste. Purement
+    /// cryptographique : fraîcheur, plancher de version et plancher d'epoch sont contrôlés séparément dans
+    /// latest_manifest, ce qui garde cette vérif indépendante du temps et de l'état persisté.
+    fn verify(&self, root_key: &[u8; 32]) -> bool {
+        let Some(epoch) = self.key_epoch else {
             return false;
         };
-        VerifyingKey::from_bytes(key)
-            .map(|key| key.verify_strict(message.as_bytes(), &Signature::from_bytes(&signature)).is_ok())
-            .unwrap_or(false)
+        let Some(subkey) = hex(&self.key).and_then(|bytes| <[u8; 32]>::try_from(bytes).ok()) else {
+            return false;
+        };
+        let delegation = format!("flocord-key-v1\n{}\n{}", self.key, epoch);
+        if !ed_verify(root_key, delegation.as_bytes(), &self.key_sig) {
+            return false;
+        }
+        let Some(message) = self.message() else {
+            return false;
+        };
+        ed_verify(&subkey, message.as_bytes(), &self.signature2)
     }
+}
+
+/// Vérifie une signature ed25519 hex détachée sur un message pour une clé publique donnée.
+fn ed_verify(key: &[u8; 32], message: &[u8], signature_hex: &str) -> bool {
+    let Some(signature) = hex(signature_hex).and_then(|bytes| <[u8; 64]>::try_from(bytes).ok()) else {
+        return false;
+    };
+    VerifyingKey::from_bytes(key)
+        .map(|key| key.verify_strict(message, &Signature::from_bytes(&signature)).is_ok())
+        .unwrap_or(false)
+}
+
+/// Vrai tant que le manifeste n'est pas plus vieux que MAX_AGE. Une horloge en retard ne fait que rendre
+/// le manifeste « plus récent » (now - date négatif), jamais périmé : on ne gèle pas sur une horloge cassée.
+fn fresh(date: i64, now: i64) -> bool {
+    now - date <= MAX_AGE_SECS
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn floor_path() -> PathBuf {
+    crate::registry::data_dir().join("min-version")
+}
+
+/// Plus haute version déjà acceptée, ou None si le fichier est absent ou illisible (on repart alors sans
+/// plancher : une corruption fait perdre la protection, jamais bloquer les mises à jour légitimes).
+fn stored_floor() -> Option<String> {
+    let text = fs::read_to_string(floor_path()).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+fn raise_floor(version: &str) {
+    if let Some(floor) = stored_floor() {
+        if !version_gt(version, &floor) {
+            return;
+        }
+    }
+    let _ = fs::create_dir_all(crate::registry::data_dir());
+    let _ = fs::write(floor_path(), version);
+}
+
+fn epoch_floor_path() -> PathBuf {
+    crate::registry::data_dir().join("min-key-epoch")
+}
+
+/// Plus haut epoch de sous-clé déjà accepté, ou None si absent/illisible (on repart alors sans plancher).
+fn stored_epoch() -> Option<u64> {
+    fs::read_to_string(epoch_floor_path()).ok()?.trim().parse().ok()
+}
+
+fn raise_epoch(epoch: u64) {
+    if let Some(floor) = stored_epoch() {
+        if epoch <= floor {
+            return;
+        }
+    }
+    let _ = fs::create_dir_all(crate::registry::data_dir());
+    let _ = fs::write(epoch_floor_path(), epoch.to_string());
 }
 
 fn hex(text: &str) -> Option<Vec<u8>> {
@@ -97,14 +209,33 @@ pub fn http(timeout: u64) -> Option<reqwest::blocking::Client> {
         .ok()
 }
 
-/// Dernier manifest publié et correctement signé, ou None hors ligne
+/// Dernier manifest publié, correctement signé, frais et non inférieur au plancher. None hors ligne ou rejeté.
 pub fn latest_manifest() -> Option<VersionManifest> {
     let text = http(6)?.get(VERSION_URL).send().ok()?.text().ok()?;
     let manifest: VersionManifest = serde_json::from_str(&text).ok()?;
-    if !manifest.verify(&SIGNING_KEY) {
-        crate::logger::write("version.json ignoré : signature absente ou invalide");
+    if !manifest.verify(&ROOT_KEY) {
+        crate::logger::write("version.json ignoré : délégation ou signature absente ou invalide");
         return None;
     }
+    if !manifest.date.map(|date| fresh(date, now_secs())).unwrap_or(false) {
+        crate::logger::write("version.json ignoré : manifeste périmé (protection anti-rejeu)");
+        return None;
+    }
+    let epoch = manifest.key_epoch?;
+    if let Some(floor) = stored_epoch() {
+        if epoch < floor {
+            crate::logger::write("version.json ignoré : sous-clé révoquée (epoch inférieur au plancher)");
+            return None;
+        }
+    }
+    if let Some(floor) = stored_floor() {
+        if version_gt(&floor, &manifest.version) {
+            crate::logger::write("version.json ignoré : version inférieure au plancher anti-retour");
+            return None;
+        }
+    }
+    raise_epoch(epoch);
+    raise_floor(&manifest.version);
     Some(manifest)
 }
 
@@ -193,10 +324,16 @@ pub fn check_and_update(embedded: &[u8]) -> Payload {
 mod tests {
     use super::*;
 
-    // Clé de test uniquement : sa clé privée a été jetée après avoir signé tests/signed-manifest.json
-    const TEST_KEY: [u8; 32] = [
-        0x8a, 0x43, 0xf1, 0x11, 0x90, 0x7a, 0x14, 0xd2, 0x19, 0x0a, 0x0e, 0x2f, 0x4f, 0xf2, 0xad, 0x62,
-        0xe9, 0x47, 0x7b, 0xbe, 0xd0, 0x10, 0xfe, 0x01, 0x4e, 0x5b, 0x70, 0x48, 0x3c, 0x19, 0x08, 0xb8,
+    // Clé RACINE de test uniquement : sa clé privée a été jetée après avoir signé tests/signed-manifest.json
+    const TEST_ROOT_KEY: [u8; 32] = [
+        0xff, 0xd2, 0x2b, 0x93, 0x65, 0x3f, 0x42, 0x0f, 0xff, 0x65, 0x4a, 0xce, 0x6e, 0xb9, 0x97, 0x1e,
+        0x4c, 0xd8, 0x3c, 0xef, 0xda, 0xfe, 0x7f, 0xe0, 0xa8, 0xc6, 0x6b, 0x8a, 0x89, 0x0c, 0x98, 0xe4,
+    ];
+
+    // Une autre clé racine valide, pour vérifier qu'un manifeste délégué par une racine n'est pas accepté par une autre.
+    const OTHER_KEY: [u8; 32] = [
+        0xec, 0x3c, 0xf1, 0x66, 0x4e, 0x95, 0x06, 0x09, 0xcf, 0x58, 0x1b, 0xf9, 0x68, 0x6c, 0x13, 0x1a,
+        0x50, 0xf3, 0xd6, 0x60, 0x5b, 0xcb, 0x72, 0x74, 0x05, 0x65, 0x33, 0xe4, 0xba, 0x1f, 0xea, 0x76,
     ];
 
     fn manifest() -> VersionManifest {
@@ -205,43 +342,73 @@ mod tests {
 
     #[test]
     fn accepts_signed_manifest() {
-        assert!(manifest().verify(&TEST_KEY));
+        assert!(manifest().verify(&TEST_ROOT_KEY));
     }
 
     #[test]
-    fn rejects_other_key() {
-        assert!(!manifest().verify(&SIGNING_KEY));
+    fn rejects_other_root_key() {
+        assert!(!manifest().verify(&OTHER_KEY));
+        assert!(!manifest().verify(&ROOT_KEY)); // le placeholder tout à zéro ne valide rien non plus
     }
 
     #[test]
     fn rejects_any_changed_field() {
-        let changes: [fn(&mut VersionManifest); 5] = [
+        let changes: [fn(&mut VersionManifest); 8] = [
             |m| m.version = "9.9.9".into(),
             |m| m.url = "https://example.com/desktop.asar".into(),
             |m| m.sha256 = "0".repeat(64),
             |m| m.cli = Some("9.9.9".into()),
             |m| m.cli_sha256 = "0".repeat(64),
+            |m| m.date = Some(0),
+            |m| m.key = "00".repeat(32),   // sous-clé échangée : la délégation ne colle plus
+            |m| m.key_epoch = Some(42),    // epoch trafiqué : la délégation ne colle plus
         ];
         for change in changes {
             let mut m = manifest();
             change(&mut m);
-            assert!(!m.verify(&TEST_KEY));
+            assert!(!m.verify(&TEST_ROOT_KEY));
         }
     }
 
     #[test]
     fn rejects_missing_or_malformed_signature() {
-        let mut m = manifest();
-        for signature in [String::new(), "zz".repeat(64), "é".repeat(64), "00".repeat(64)] {
-            m.signature = signature;
-            assert!(!m.verify(&TEST_KEY));
+        for field in ["signature2", "key_sig"] {
+            for value in [String::new(), "zz".repeat(64), "é".repeat(64), "00".repeat(64)] {
+                let mut m = manifest();
+                match field {
+                    "signature2" => m.signature2 = value,
+                    _ => m.key_sig = value,
+                }
+                assert!(!m.verify(&TEST_ROOT_KEY));
+            }
         }
     }
 
     #[test]
+    fn rejects_manifest_without_date_or_epoch() {
+        let mut m = manifest();
+        m.date = None;
+        assert!(!m.verify(&TEST_ROOT_KEY));
+        let mut m = manifest();
+        m.key_epoch = None;
+        assert!(!m.verify(&TEST_ROOT_KEY));
+    }
+
+    #[test]
     fn unsigned_legacy_manifest_parses_but_is_rejected() {
+        // Un manifeste v1 pur (ni délégation, ni date, ni signature2) est refusé sans repli.
         let legacy: VersionManifest = serde_json::from_str(r#"{ "version": "2.8.3", "cli": "2.8.3", "url": "https://x" }"#).unwrap();
-        assert!(!legacy.verify(&SIGNING_KEY));
+        assert!(!legacy.verify(&OTHER_KEY));
+        assert!(!legacy.verify(&TEST_ROOT_KEY));
+    }
+
+    #[test]
+    fn stale_manifest_is_not_fresh() {
+        let now = 1_800_000_000;
+        assert!(fresh(now, now));
+        assert!(fresh(now - MAX_AGE_SECS, now));
+        assert!(!fresh(now - MAX_AGE_SECS - 1, now));
+        assert!(fresh(now + 10_000, now)); // horloge en retard : jamais périmé
     }
 
     #[test]
