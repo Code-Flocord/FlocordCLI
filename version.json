@@ -1,1 +1,8 @@
-{ "version": "2.8.3", "cli": "2.8.3", "url": "https://github.com/Code-Flocord/Flocord/releases/download/latest/desktop.asar" }
+{
+    "version":  "2.9.0",
+    "cli":  "2.9.0",
+    "url":  "https://github.com/Code-Flocord/Flocord/releases/download/v2.9.0/desktop.asar",
+    "sha256":  "561e8683658b22df6282277caf66b16fe7fbd98c1d8a57f654f8f5557594fc5e",
+    "cli_sha256":  "9cf0613bb0266bf73c4309e3a171e8c04101e479180f390c5e0880442b4014be",
+    "signature":  "59d976e5b4a283ecd5739cac5d6557d0b9e0df17163976fcab8ec5fba9cee946a973f4e096c8414b626323a8652d0786f109641e7a5bb7efd5d73cd6a55d9d07"
+}
