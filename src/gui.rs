@@ -85,6 +85,10 @@ enum Target {
 
 pub struct App {
     entries: Vec<status::ClientStatus>,
+    /// Le premier scan (autorepair + détection des Discord) tourne en fond : sur une machine où
+    /// l'antivirus scanne chaque accès disque de cet exe, ça peut prendre largement plus d'une
+    /// seconde et ça ne doit jamais retarder l'affichage de la fenêtre.
+    entries_rx: Option<Receiver<Vec<status::ClientStatus>>>,
     selected: Option<Target>,
     action: Option<Action>,
     screen: Screen,
@@ -115,12 +119,17 @@ impl App {
             let _ = tx.send(selfupdate::available());
         });
 
-        autorepair::refresh_if_enabled();
+        let (entries_tx, entries_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            autorepair::refresh_if_enabled();
+            let _ = entries_tx.send(status::all());
+        });
 
-        let entries = status::all();
+        let entries = Vec::new();
         Self {
             selected: if entries.len() == 1 { Some(Target::One(0)) } else { None },
             entries,
+            entries_rx: Some(entries_rx),
             action: None,
             screen: Screen::PickClient,
             protection: autorepair::is_enabled(),
@@ -254,6 +263,17 @@ impl App {
         if self.newer.is_none() {
             if let Ok(result) = self.update_rx.try_recv() {
                 self.newer = Some(result);
+            }
+        }
+
+        if let Some(rx) = &self.entries_rx {
+            if let Ok(entries) = rx.try_recv() {
+                self.selected = if entries.len() == 1 { Some(Target::One(0)) } else { None };
+                self.entries = entries;
+                self.protection = autorepair::is_enabled();
+                self.entries_rx = None;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(80));
             }
         }
 
@@ -497,7 +517,12 @@ impl App {
             if self.entries.is_empty() {
                 egui::Frame::new().fill(glass(90)).corner_radius(CornerRadius::same(14)).inner_margin(Margin::same(20)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Aucun Discord trouvé. Installe Discord (Stable, PTB, Canary ou Development) puis relance cet installeur.").color(MUTED));
+                    let message = if self.entries_rx.is_some() {
+                        "Recherche des Discord installés..."
+                    } else {
+                        "Aucun Discord trouvé. Installe Discord (Stable, PTB, Canary ou Development) puis relance cet installeur."
+                    };
+                    ui.label(RichText::new(message).color(MUTED));
                 });
             }
         });
@@ -1004,12 +1029,20 @@ pub fn run() {
             .with_decorations(false)
             .with_transparent(true)
             .with_icon(Arc::new(icon())),
+        // The window is a fixed size and never resizable, so there is nothing useful to persist —
+        // and a corrupted/stale stored size (e.g. saved while minimized) would silently override
+        // with_inner_size above on every future launch, leaving a near-invisible window.
+        persist_window: false,
         ..Default::default()
     };
 
     if let Err(error) = eframe::run_native("Flocord Installer", options, Box::new(|cc| Ok(Box::new(App::new(cc))))) {
         logger::write(&format!("Interface graphique impossible : {}", error));
-        // Sans interface graphique (pilote ou session distante), retour au menu console
+        // Sans interface graphique (pilote ou session distante), retour au menu console.
+        // main() n'attache la console que sur la branche CLI : sans ça, ce menu tournerait
+        // sans aucune fenêtre visible, en attente d'une saisie clavier impossible à donner.
+        crate::ui::attach_console();
+        crate::ui::enable_ansi();
         cli::interactive();
     }
 }
