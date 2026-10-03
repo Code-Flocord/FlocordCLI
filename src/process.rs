@@ -1,8 +1,6 @@
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::thread::sleep;
-use std::time::Duration;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -75,21 +73,11 @@ pub fn launch_discord(discord_path: &PathBuf, executable: &PathBuf) -> bool {
 pub fn close_discord(discord_path: &PathBuf) -> bool {
     let process_name = get_process_name(discord_path);
 
-    println!("Fermeture du processus : {}", process_name);
+    crate::say!("Fermeture du processus : {}", process_name);
 
-    // Fermeture douce d'abord : taskkill sans /F poste WM_CLOSE, ce qui laisse Discord s'arrêter
-    // proprement et flusher sa base leveldb, où vit le token de session. Un /F brutal peut la corrompre
-    // en pleine écriture et déconnecter le compte. On ne force qu'en dernier recours.
-    let _ = hidden("taskkill").args(["/IM", &process_name]).output();
-
-    for _ in 0..16 {
-        if !is_process_running(discord_path) {
-            return true;
-        }
-        sleep(Duration::from_millis(500));
-    }
-
-    println!("Fermeture forcée (dernier recours) : {}", process_name);
+    // Fermeture directe (/F) : une tentative de fermeture douce (WM_CLOSE) avant ça a été testée
+    // et semblait corréler avec des déconnexions de compte au redémarrage de Discord, alors que ce
+    // taskkill /F direct, utilisé depuis le tout début de l'installeur, n'a jamais posé ce problème.
     let result = hidden("taskkill")
         .args(["/IM", &process_name, "/F"])
         .output();

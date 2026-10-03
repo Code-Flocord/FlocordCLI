@@ -2,8 +2,8 @@ use crate::client::DiscordClient;
 use crate::status::ClientStatus;
 use crate::ui::{self, DIM, RESET, VIOLET};
 
-/// Choix d'un Discord parmi plusieurs, avec l'état de Flocord sur chacun
-pub fn select(entries: &[ClientStatus]) -> Option<DiscordClient> {
+/// Choix d'un ou plusieurs Discord parmi ceux détectés, avec l'état de Flocord sur chacun
+pub fn select(entries: &[ClientStatus]) -> Option<Vec<DiscordClient>> {
     println!();
     for (index, entry) in entries.iter().enumerate() {
         println!(
@@ -18,13 +18,21 @@ pub fn select(entries: &[ClientStatus]) -> Option<DiscordClient> {
             entry.state.label()
         );
     }
+    if entries.len() > 1 {
+        println!("  {}[A]{} Tous les Discord", VIOLET, RESET);
+    }
     println!("  {}[0]{} Retour", VIOLET, RESET);
     println!();
 
-    let choice: usize = ui::prompt("> ").parse().ok()?;
+    let input = ui::prompt("> ");
+    if entries.len() > 1 && input.eq_ignore_ascii_case("a") {
+        return Some(entries.iter().map(|e| e.client.clone()).collect());
+    }
+
+    let choice: usize = input.parse().ok()?;
     if choice == 0 || choice > entries.len() {
         return None;
     }
 
-    Some(entries[choice - 1].client.clone())
+    Some(vec![entries[choice - 1].client.clone()])
 }

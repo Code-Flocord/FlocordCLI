@@ -51,11 +51,12 @@ pub fn headless(action: Action, args: &args::Args) {
     }
 }
 
-/// Ferme Discord si besoin, exécute l'action, relance Discord. Retourne true si l'action a réussi.
-pub fn run_action(action: Action, client: &DiscordClient, silent: bool) -> bool {
+/// Ferme Discord si besoin et exécute l'action, sans relancer Discord. Some(était ouvert avant) si
+/// l'action a réussi, None si annulée ou échouée — à la charge de l'appelant de proposer la relance.
+fn run_action_core(action: Action, client: &DiscordClient, silent: bool) -> Option<bool> {
     let Some(was_running) = ensure_closed(client, silent) else {
         println!("Opération annulée.");
-        return false;
+        return None;
     };
 
     let ok = match action {
@@ -68,14 +69,23 @@ pub fn run_action(action: Action, client: &DiscordClient, silent: bool) -> bool 
     if !ok {
         println!();
         println!("❌ L'opération a échoué. Journal : {}", logger::log_file().display());
-        return false;
+        return None;
     }
+
+    Some(was_running)
+}
+
+/// Ferme Discord si besoin, exécute l'action, relance Discord. Retourne true si l'action a réussi.
+pub fn run_action(action: Action, client: &DiscordClient, silent: bool) -> bool {
+    let Some(was_running) = run_action_core(action, client, silent) else {
+        return false;
+    };
 
     if silent {
         if was_running {
             process::launch_discord(&client.path, &client.executable);
         }
-    } else if ui::confirm(&format!("Relancer {} maintenant ?", client.name)) {
+    } else if was_running && ui::confirm(&format!("Relancer {} maintenant ?", client.name)) {
         if process::launch_discord(&client.path, &client.executable) {
             println!("✔ {} relancé.", client.name);
         } else {
@@ -161,21 +171,23 @@ pub fn interactive() {
         println!();
 
         match ui::prompt("> ").as_str() {
-            "1" => with_client("Installation", |c| run_action(Action::Install, c, false)),
-            "2" => with_client("Réparation", |c| run_action(Action::Repair, c, false)),
-            "3" => with_client("Désinstallation", |c| run_action(Action::Uninstall, c, false)),
+            "1" => with_client("Installation", |c| run_action_core(Action::Install, c, false)),
+            "2" => with_client("Réparation", |c| run_action_core(Action::Repair, c, false)),
+            "3" => with_client("Désinstallation", |c| run_action_core(Action::Uninstall, c, false)),
             "4" => toggle_protection(),
+            // OpenAsar ne propose jamais de relancer : on ignore le "était ouvert avant" renvoyé par
+            // ensure_closed en le remplaçant par `false` pour que with_client ne l'ajoute jamais à relaunch.
             "5" => with_client("OpenAsar", |c| {
-                ensure_closed(c, false).is_some() && {
+                ensure_closed(c, false).map(|_| {
                     openasar::install(c);
-                    true
-                }
+                    false
+                })
             }),
             "6" => with_client("OpenAsar", |c| {
-                ensure_closed(c, false).is_some() && {
+                ensure_closed(c, false).map(|_| {
                     openasar::uninstall(c);
-                    true
-                }
+                    false
+                })
             }),
             "7" => open(SUPPORT_URL),
             "8" => open(&logger::log_file().to_string_lossy()),
@@ -199,9 +211,12 @@ fn overview() {
     }
 
     for entry in entries {
+        // Largeur 20 : couvre le plus long nom de canal ("DiscordDevelopment", 19 caractères) avec
+        // au moins une colonne d'espace, sinon {:<14} n'ajoute aucun padding au-delà de 14 et la
+        // colonne suivante se retrouve collée au nom pour ce canal-là.
         println!(
-            "  {:<14}{}{:<14}{} {}",
-            format!("{}", entry.client.name),
+            "  {:<20}{}{:<14}{} {}",
+            entry.client.name,
             DIM,
             entry.client.version,
             RESET,
@@ -210,25 +225,53 @@ fn overview() {
     }
 }
 
-fn with_client(title: &str, action: impl Fn(&DiscordClient) -> bool) {
+/// Exécute `action` sur un ou plusieurs clients ; `action` retourne Some(était ouvert avant) en cas de
+/// succès. Avec plusieurs clients, la relance n'est demandée qu'une seule fois pour tout le lot au lieu
+/// d'une confirmation répétée à chaque canal.
+fn with_client(title: &str, action: impl Fn(&DiscordClient) -> Option<bool>) {
     ui::section(title);
 
     let entries = status::all();
-    let client = match entries.len() {
+    let clients: Vec<DiscordClient> = match entries.len() {
         0 => {
             println!("  Aucun Discord trouvé.");
             ui::pause();
             return;
         }
-        1 => entries.into_iter().next().map(|e| e.client),
-        _ => selector::select(&entries),
+        1 => vec![entries.into_iter().next().unwrap().client],
+        _ => match selector::select(&entries) {
+            Some(clients) => clients,
+            None => return,
+        },
     };
 
-    let Some(client) = client else {
-        return;
-    };
+    let mut relaunch = Vec::new();
+    for client in &clients {
+        if clients.len() > 1 {
+            println!();
+            println!("{}── {} {}", VIOLET, client.name, RESET);
+        }
+        if let Some(true) = action(client) {
+            relaunch.push(client.clone());
+        }
+    }
 
-    action(&client);
+    if !relaunch.is_empty() {
+        let question = match relaunch.as_slice() {
+            [one] => format!("Relancer {} maintenant ?", one.name),
+            many => format!("Relancer les {} Discord fermés maintenant ?", many.len()),
+        };
+        if ui::confirm(&question) {
+            for client in &relaunch {
+                if process::launch_discord(&client.path, &client.executable) {
+                    println!("✔ {} relancé.", client.name);
+                } else {
+                    println!("❌ Impossible de relancer {}.", client.name);
+                }
+            }
+        }
+    }
+
     ui::pause();
 }
 

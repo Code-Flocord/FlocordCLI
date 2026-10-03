@@ -1,53 +1,23 @@
-// Sortie des modules métier : écrite sur la console et, quand l'interface graphique écoute, envoyée à sa file.
+// Sortie des modules métier, écrite sur la console.
 
 use std::io::{self, Write};
-use std::sync::mpsc::Sender;
-use std::sync::Mutex;
-
-pub enum Step {
-    Log(String),
-    /// Progression d'un téléchargement (0..=1) et libellé
-    Progress(f32, String),
-}
-
-static SINK: Mutex<Option<Sender<Step>>> = Mutex::new(None);
-
-pub fn set_sink(sender: Option<Sender<Step>>) {
-    *SINK.lock().unwrap() = sender;
-}
-
-fn gui_listening() -> bool {
-    SINK.lock().unwrap().is_some()
-}
 
 pub fn say(message: impl Into<String>) {
-    let message = message.into();
-    if let Some(sender) = SINK.lock().unwrap().as_ref() {
-        let _ = sender.send(Step::Log(message.clone()));
-    }
-    println!("{}", message);
+    println!("{}", message.into());
 }
 
-/// Progression : barre sur la console, événement pour l'interface
+/// Barre de progression sur la console
 pub fn progress(fraction: f32, label: String) {
-    if let Some(sender) = SINK.lock().unwrap().as_ref() {
-        let _ = sender.send(Step::Progress(fraction, label));
-        return;
-    }
-    {
-        let filled = (fraction * 25.0) as usize;
-        print!("\r  {} [{}{}] {:>3}%", label, "█".repeat(filled), "░".repeat(25 - filled), (fraction * 100.0) as u32);
-        let _ = io::stdout().flush();
-    }
+    let filled = (fraction * 25.0) as usize;
+    print!("\r  {} [{}{}] {:>3}%", label, "█".repeat(filled), "░".repeat(25 - filled), (fraction * 100.0) as u32);
+    let _ = io::stdout().flush();
 }
 
 pub fn progress_done() {
-    if !gui_listening() {
-        println!();
-    }
+    println!();
 }
 
-/// Retire les séquences de couleur ANSI (pour le journal et l'interface graphique)
+/// Retire les séquences de couleur ANSI (pour le journal)
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars();

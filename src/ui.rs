@@ -11,25 +11,6 @@ unsafe extern "system" {
     fn GetStdHandle(handle: u32) -> *mut std::ffi::c_void;
     fn GetConsoleMode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32;
     fn SetConsoleMode(handle: *mut std::ffi::c_void, mode: u32) -> i32;
-    fn AttachConsole(process_id: u32) -> i32;
-    fn AllocConsole() -> i32;
-}
-
-/// L'exécutable est une application fenêtrée : en mode console on se rattache au terminal
-/// qui l'a lancé, ou on en ouvre un si on vient de l'Explorateur.
-pub fn attach_console() {
-    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
-    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
-    unsafe {
-        // Sortie déjà redirigée (pipe, fichier) : on ne touche à rien
-        let current = GetStdHandle(STD_OUTPUT_HANDLE);
-        if !current.is_null() && current as isize != -1 {
-            return;
-        }
-        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
-            AllocConsole();
-        }
-    }
 }
 
 /// Active les séquences ANSI (couleurs) dans la console classique de Windows
@@ -47,7 +28,11 @@ pub fn enable_ansi() {
 }
 
 pub fn clear_screen() {
-    print!("\x1B[2J\x1B[1;1H");
+    // \x1B[2J n'efface que l'écran visible ; certains hôtes de console (PowerShell hérité, profils
+    // avec transparence/image de fond) laissent alors des restes d'une frame précédente tant que rien
+    // ne force un repaint complet. \x1B[3J vide aussi le scrollback, \x1B[0J l'écran depuis le curseur.
+    print!("\x1B[2J\x1B[3J\x1B[1;1H\x1B[0J");
+    let _ = io::stdout().flush();
 }
 
 pub fn banner(version: &str) {

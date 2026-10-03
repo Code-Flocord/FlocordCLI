@@ -17,12 +17,10 @@ pub struct Args {
     pub silent: bool,
     /// Canal ciblé (stable / ptb / canary). Sans canal : tous les Discord trouvés.
     pub channel: Option<String>,
-    /// Menu console au lieu de l'interface graphique
-    pub cli: bool,
 }
 
 pub fn parse() -> Args {
-    let mut args = Args { action: None, silent: false, channel: None, cli: false };
+    let mut args = Args { action: None, silent: false, channel: None };
     let mut list = std::env::args().skip(1);
 
     while let Some(arg) = list.next() {
@@ -35,7 +33,6 @@ pub fn parse() -> Args {
             "--disable-protection" => args.action = Some(Action::DisableProtection),
             "--silent" | "-s" => args.silent = true,
             "--channel" | "-c" => args.channel = list.next().map(|c| c.to_lowercase()),
-            "--cli" => args.cli = true,
             "--help" | "-h" | "/?" => args.action = Some(Action::Help),
             _ => {}
         }
@@ -59,5 +56,5 @@ Options :
   --channel <stable|ptb|canary>   Cible un seul Discord (sinon : tous)
   --silent, -s                    Aucune question, Discord est fermé et relancé si besoin
 
-Sans argument : interface graphique. --cli : menu console."
+Sans argument : menu console."
 }
