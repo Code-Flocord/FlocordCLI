@@ -47,15 +47,22 @@ fn read_lock(resources: &Path) -> Option<String> {
     Some(if text.starts_with(|c: char| c.is_ascii_digit()) { text.to_string() } else { "?".to_string() })
 }
 
+/// Vrai si ce dossier app-X.Y.Z a un resources/ exploitable (app.asar ou _app.asar présent). Une mise à
+/// jour Discord interrompue en cours de route laisse un dossier app-X.Y.Z flambant neuf mais vide : on
+/// ne veut jamais essayer de patcher ça.
+pub fn has_usable_resources(folder: &Path) -> bool {
+    let resources = folder.join("resources");
+    resources.join("app.asar").exists() || resources.join("_app.asar").exists()
+}
+
 pub fn detect(client: &DiscordClient) -> Option<InstallInfo> {
-    let newest = version_folders(client).pop()?;
+    // Le plus récent dossier réellement exploitable, pas juste le plus récent par numéro de version :
+    // un dossier plus haut en version peut n'être qu'un squelette laissé par une mise à jour Discord
+    // interrompue (resources/ vide), auquel cas on retombe sur le dernier dossier complet.
+    let newest = version_folders(client).into_iter().rev().find(|f| has_usable_resources(f))?;
     let resources = newest.join("resources");
     let app_asar = resources.join("app.asar");
     let original_asar = resources.join("_app.asar");
-
-    if !app_asar.exists() && !original_asar.exists() {
-        return None;
-    }
 
     // Un app.asar fichier à côté d'un _app.asar = Flocord en place (le marqueur peut manquer si
     // l'asar a été posé par la mise à jour automatique du client)
